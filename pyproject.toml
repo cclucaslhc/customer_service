@@ -1,0 +1,23 @@
+[project]
+name = "customer-service-ai"
+version = "0.1.0"
+description = "PydanticAI based customer service MVP"
+requires-python = ">=3.10"
+dependencies = [
+  "cryptography>=50.0.0",
+  "fastapi>=0.141.0",
+  "httpx>=0.28.0",
+  "jieba>=0.42.1",
+  "pydantic-ai>=2.31.0",
+  "pypdf>=6.16.0",
+  "python-docx>=1.2.0",
+  "python-multipart>=0.0.22",
+  "uvicorn[standard]>=0.52.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=9.0", "pytest-asyncio>=1.4"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
