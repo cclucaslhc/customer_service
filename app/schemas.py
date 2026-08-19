@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field, model_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 
 ProviderName = Literal["deepseek", "openai"]
@@ -22,6 +22,74 @@ class ActiveProviderUpdate(BaseModel):
 
 class ChatMessageInput(BaseModel):
     content: str = Field(min_length=1, max_length=8000)
+
+
+class MessageFeedbackInput(BaseModel):
+    rating: Literal["up", "down"] | None = None
+
+
+class SessionTitleUpdate(BaseModel):
+    title: str = Field(min_length=1, max_length=80)
+
+    @field_validator("title")
+    @classmethod
+    def title_must_have_text(cls, value: str) -> str:
+        value = " ".join(value.split())
+        if not value:
+            raise ValueError("会话标题不能为空")
+        return value
+
+
+class AdminSessionUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=80)
+    management_status: Literal["open", "pending", "resolved"] | None = None
+    assignee: str | None = Field(default=None, max_length=80)
+    tags: list[str] | None = Field(default=None, max_length=20)
+
+    @field_validator("title")
+    @classmethod
+    def clean_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = " ".join(value.split())
+        if not value:
+            raise ValueError("会话标题不能为空")
+        return value
+
+    @field_validator("tags")
+    @classmethod
+    def clean_tags(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        return list(dict.fromkeys(tag.strip()[:30] for tag in value if tag.strip()))[:20]
+
+
+class SessionNoteInput(BaseModel):
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class PromptDraftInput(BaseModel):
+    content: str = Field(min_length=20, max_length=20000)
+    change_note: str = Field(default="", max_length=300)
+
+
+class PromptRollbackInput(BaseModel):
+    change_note: str = Field(default="", max_length=300)
+
+
+class KnowledgeSearchInput(BaseModel):
+    query: str = Field(min_length=1, max_length=500)
+    limit: int = Field(default=6, ge=1, le=20)
+
+
+class ContactAdminUpdate(BaseModel):
+    status: Literal["new", "following", "closed"] | None = None
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class KnowledgePathInput(BaseModel):
+    path: str = Field(min_length=1, max_length=2048)
+    recursive: bool = True
 
 
 class ContactInput(BaseModel):

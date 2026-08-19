@@ -5,6 +5,7 @@ __pycache__/
 data/app.db
 data/secrets/
 data/uploads/
+data/knowledge/
 frontend/node_modules/
 frontend/dist/
 *.tsbuildinfo

@@ -1,0 +1,9 @@
+@media (max-width: 800px) {
+  .chat-layout { grid-template-columns: 1fr; }
+  .session-panel { position: static; height: auto; max-height: 210px; border-right: 0; border-bottom: 1px solid #ded8ca; }
+  .session-panel-head { padding: 13px 16px 9px; }
+  .session-list { display: flex; overflow-x: auto; padding: 8px; }
+  .session-item { min-width: 220px; margin: 0 6px 0 0; }
+  .session-list .session-open { min-width: 200px; }
+  .admin-session-row { grid-template-columns: 1fr; gap: 8px; }
+}

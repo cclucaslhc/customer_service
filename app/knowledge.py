@@ -1,6 +1,7 @@
 import hashlib
 import io
 import re
+import unicodedata
 import uuid
 from pathlib import Path
 
@@ -9,11 +10,37 @@ from docx import Document as DocxDocument
 from pypdf import PdfReader
 
 from app.database import connect, utc_now
-from app.settings import ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, UPLOAD_DIR
+from app.settings import ALLOWED_EXTENSIONS, KNOWLEDGE_DIR, LEGACY_UPLOAD_DIR, MAX_UPLOAD_BYTES, ROOT, SECRETS_DIR
 
 
 class KnowledgeError(ValueError):
     pass
+
+
+class KnowledgeDuplicateError(KnowledgeError):
+    pass
+
+
+def is_within(path: Path, directory: Path) -> bool:
+    try:
+        path.resolve().relative_to(directory.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def normalize_filename(filename: str) -> str:
+    value = Path(filename).name
+    try:
+        repaired = value.encode("latin-1").decode("utf-8")
+        if repaired != value and re.search(r"[\u3400-\u9fff]", repaired):
+            value = repaired
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass
+    value = unicodedata.normalize("NFC", value).strip()
+    if not value or value in {".", ".."}:
+        raise KnowledgeError("文件名无效")
+    return value
 
 
 def tokenize(text: str) -> str:
@@ -74,8 +101,24 @@ def chunk_sections(sections: list[tuple[str, str]], target_chars: int = 900) -> 
 
 
 class KnowledgeService:
-    def ingest(self, filename: str, data: bytes) -> dict:
-        extension = Path(filename).suffix.lower()
+    def _managed_path(self, filename: str, digest: str, source_path: Path | None = None) -> Path:
+        if source_path:
+            resolved_source = source_path.resolve()
+            try:
+                resolved_source.relative_to(KNOWLEDGE_DIR.resolve())
+                return resolved_source
+            except ValueError:
+                pass
+
+        safe_name = Path(filename).name
+        destination = KNOWLEDGE_DIR / safe_name
+        if destination.exists() and hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
+            destination = KNOWLEDGE_DIR / f"{Path(safe_name).stem}-{digest[:8]}{Path(safe_name).suffix.lower()}"
+        return destination
+
+    def ingest(self, filename: str, data: bytes, source_path: Path | None = None) -> dict:
+        display_name = normalize_filename(filename)
+        extension = Path(display_name).suffix.lower()
         if extension not in ALLOWED_EXTENSIONS:
             raise KnowledgeError("仅支持 PDF、DOCX、Markdown 和 TXT")
         if len(data) > MAX_UPLOAD_BYTES:
@@ -86,11 +129,13 @@ class KnowledgeService:
         with connect() as db:
             duplicate = db.execute("SELECT id FROM documents WHERE sha256=?", (digest,)).fetchone()
         if duplicate:
-            raise KnowledgeError("该文件已经上传")
+            raise KnowledgeDuplicateError("该文件已经建立索引")
         doc_id = str(uuid.uuid4())
-        stored_name = f"{digest}{extension}"
-        path = UPLOAD_DIR / stored_name
-        path.write_bytes(data)
+        path = self._managed_path(display_name, digest, source_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if source_path is None or path.resolve() != source_path.resolve():
+            path.write_bytes(data)
+        stored_name = str(path.relative_to(KNOWLEDGE_DIR))
         try:
             chunks = chunk_sections(parse_document(data, extension))
             if not chunks:
@@ -98,7 +143,7 @@ class KnowledgeService:
             with connect() as db:
                 db.execute(
                     "INSERT INTO documents(id,display_name,stored_name,extension,size,sha256,status,chunk_count,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                    (doc_id, Path(filename).name, stored_name, extension, len(data), digest, "ready", len(chunks), utc_now()),
+                    (doc_id, display_name, stored_name, extension, len(data), digest, "ready", len(chunks), utc_now()),
                 )
                 for index, chunk in enumerate(chunks):
                     db.execute(
@@ -106,9 +151,73 @@ class KnowledgeService:
                         (doc_id, index, chunk["section"], chunk["location"], chunk["content"], tokenize(chunk["content"])),
                     )
         except Exception:
-            path.unlink(missing_ok=True)
+            if source_path is None or path.resolve() != source_path.resolve():
+                path.unlink(missing_ok=True)
             raise
-        return {"id": doc_id, "display_name": Path(filename).name, "status": "ready", "chunk_count": len(chunks)}
+        return {"id": doc_id, "display_name": display_name, "status": "ready", "chunk_count": len(chunks)}
+
+    def location(self) -> dict:
+        return {
+            "path": str(KNOWLEDGE_DIR.resolve()),
+            "supported_extensions": sorted(ALLOWED_EXTENSIONS),
+        }
+
+    def import_path(self, raw_path: str, recursive: bool = True) -> dict:
+        source = Path(raw_path.strip().strip('"')).expanduser()
+        if not source.is_absolute():
+            source = ROOT / source
+        source = source.resolve()
+        if not source.exists():
+            raise KnowledgeError("文件或目录不存在")
+        if is_within(source, SECRETS_DIR):
+            raise KnowledgeError("不能从密钥目录导入知识库")
+
+        if source.is_file():
+            candidates = [source]
+        elif source.is_dir():
+            pattern = "**/*" if recursive else "*"
+            candidates = sorted(
+                [
+                    path for path in source.glob(pattern)
+                    if path.is_file() and not is_within(path, SECRETS_DIR)
+                ],
+                key=lambda path: str(path).casefold(),
+            )
+        else:
+            raise KnowledgeError("路径必须是普通文件或目录")
+
+        if len(candidates) > 500:
+            raise KnowledgeError("单次最多导入 500 个文档")
+
+        imported: list[dict] = []
+        skipped: list[dict] = []
+        failed: list[dict] = []
+        for candidate in candidates:
+            issue = {"path": str(candidate), "display_name": normalize_filename(candidate.name)}
+            if candidate.suffix.lower() not in ALLOWED_EXTENSIONS:
+                skipped.append({**issue, "reason": "不支持的文件格式"})
+                continue
+            try:
+                if candidate.stat().st_size > MAX_UPLOAD_BYTES:
+                    failed.append({**issue, "reason": "文件不能超过 20 MB"})
+                    continue
+                result = self.ingest(candidate.name, candidate.read_bytes(), source_path=candidate)
+                imported.append(result)
+            except KnowledgeDuplicateError as exc:
+                skipped.append({**issue, "reason": str(exc)})
+            except Exception as exc:
+                reason = str(exc).strip() or "文档解析失败"
+                failed.append({**issue, "reason": reason})
+
+        return {
+            "source_path": str(source),
+            "imported": imported,
+            "imported_count": len(imported),
+            "skipped": skipped,
+            "skipped_count": len(skipped),
+            "failed": failed,
+            "failed_count": len(failed),
+        }
 
     def list_documents(self) -> list[dict]:
         with connect() as db:
@@ -119,8 +228,18 @@ class KnowledgeService:
             row = db.execute("SELECT stored_name FROM documents WHERE id=?", (document_id,)).fetchone()
             if not row:
                 raise KnowledgeError("文档不存在")
+        managed_path = (KNOWLEDGE_DIR / row["stored_name"]).resolve()
+        try:
+            managed_path.relative_to(KNOWLEDGE_DIR.resolve())
+        except ValueError as exc:
+            raise KnowledgeError("文档存储路径无效") from exc
+        with connect() as db:
             db.execute("DELETE FROM documents WHERE id=?", (document_id,))
-        (UPLOAD_DIR / row["stored_name"]).unlink(missing_ok=True)
+        if managed_path.exists():
+            managed_path.unlink()
+        else:
+            # 兼容改版前保存在 data/uploads 中的哈希命名文档。
+            (LEGACY_UPLOAD_DIR / row["stored_name"]).unlink(missing_ok=True)
 
     def rebuild(self) -> int:
         with connect() as db:

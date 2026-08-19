@@ -12,6 +12,7 @@ dependencies = [
   "pypdf>=6.16.0",
   "python-docx>=1.2.0",
   "python-multipart>=0.0.22",
+  "tzdata>=2025.2; platform_system == 'Windows'",
   "uvicorn[standard]>=0.52.0",
 ]
 
