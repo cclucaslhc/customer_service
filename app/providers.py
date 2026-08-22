@@ -6,6 +6,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 
 from app.database import connect, utc_now
 from app.security import SecretStore
+from app.settings import MODEL_HTTP_MAX_CONNECTIONS, MODEL_HTTP_MAX_KEEPALIVE, MODEL_RUN_TIMEOUT_SECONDS
 
 
 PROVIDER_BASE_URLS = {
@@ -31,6 +32,23 @@ class ProviderSnapshot:
 class ModelGateway:
     def __init__(self, secrets: SecretStore) -> None:
         self.secrets = secrets
+        self._http_client: httpx.AsyncClient | None = None
+
+    def _client(self) -> httpx.AsyncClient:
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = httpx.AsyncClient(
+                limits=httpx.Limits(
+                    max_connections=MODEL_HTTP_MAX_CONNECTIONS,
+                    max_keepalive_connections=MODEL_HTTP_MAX_KEEPALIVE,
+                    keepalive_expiry=30,
+                ),
+                timeout=httpx.Timeout(MODEL_RUN_TIMEOUT_SECONDS, connect=10),
+            )
+        return self._http_client
+
+    async def close(self) -> None:
+        if self._http_client is not None and not self._http_client.is_closed:
+            await self._http_client.aclose()
 
     def list_configs(self) -> dict:
         with connect() as db:
@@ -100,6 +118,7 @@ class ModelGateway:
         provider = OpenAIProvider(
             base_url=PROVIDER_BASE_URLS[snapshot.provider],
             api_key=snapshot.api_key,
+            http_client=self._client(),
         )
         return OpenAIChatModel(snapshot.model, provider=provider)
 
@@ -118,8 +137,7 @@ class ModelGateway:
         payload = {"model": chosen_model, "messages": [{"role": "user", "content": "Reply OK"}], "max_tokens": 4}
         status, message = "success", "连接成功"
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
-                response = await client.post(url, headers={"Authorization": f"Bearer {key}"}, json=payload)
+            response = await self._client().post(url, headers={"Authorization": f"Bearer {key}"}, json=payload, timeout=20)
             if response.status_code >= 400:
                 status, message = "error", f"供应商返回 HTTP {response.status_code}"
         except httpx.TimeoutException:

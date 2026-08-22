@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Iterator
 
-from app.settings import DATABASE_PATH, ensure_directories
+from app.settings import DATABASE_BUSY_TIMEOUT_MS, DATABASE_PATH, ensure_directories
 from app.prompting import DEFAULT_BUSINESS_PROMPT
 
 
@@ -14,9 +14,14 @@ def utc_now() -> str:
 @contextmanager
 def connect() -> Iterator[sqlite3.Connection]:
     ensure_directories()
-    conn = sqlite3.connect(DATABASE_PATH, timeout=15, check_same_thread=False)
+    conn = sqlite3.connect(
+        DATABASE_PATH,
+        timeout=DATABASE_BUSY_TIMEOUT_MS / 1000,
+        check_same_thread=False,
+    )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(f"PRAGMA busy_timeout = {DATABASE_BUSY_TIMEOUT_MS}")
     try:
         yield conn
         conn.commit()
@@ -28,6 +33,16 @@ def connect() -> Iterator[sqlite3.Connection]:
 
 
 def init_database() -> None:
+    # WAL lets readers continue while another request is committing. Setting it once
+    # during startup avoids changing journal mode on every short-lived connection.
+    ensure_directories()
+    bootstrap = sqlite3.connect(DATABASE_PATH, timeout=DATABASE_BUSY_TIMEOUT_MS / 1000)
+    try:
+        bootstrap.execute(f"PRAGMA busy_timeout = {DATABASE_BUSY_TIMEOUT_MS}")
+        bootstrap.execute("PRAGMA journal_mode = WAL")
+        bootstrap.execute("PRAGMA synchronous = NORMAL")
+    finally:
+        bootstrap.close()
     with connect() as db:
         db.executescript(
             """
@@ -90,6 +105,15 @@ def init_database() -> None:
                 status TEXT NOT NULL,
                 error_message TEXT,
                 chunk_count INTEGER NOT NULL DEFAULT 0,
+                detected_type TEXT,
+                source_path TEXT,
+                source_mtime REAL,
+                parser_version TEXT NOT NULL DEFAULT '1.0',
+                chunker_version TEXT NOT NULL DEFAULT '1.0',
+                indexed_at TEXT,
+                version INTEGER NOT NULL DEFAULT 1,
+                warnings_json TEXT NOT NULL DEFAULT '[]',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS knowledge_chunks (
@@ -99,7 +123,28 @@ def init_database() -> None:
                 section TEXT,
                 location TEXT,
                 content TEXT NOT NULL,
-                tokenized TEXT NOT NULL
+                tokenized TEXT NOT NULL,
+                block_type TEXT NOT NULL DEFAULT 'paragraph',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                char_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS knowledge_jobs (
+                id TEXT PRIMARY KEY,
+                source_path TEXT NOT NULL,
+                recursive INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL,
+                stage TEXT NOT NULL DEFAULT 'pending',
+                total_count INTEGER NOT NULL DEFAULT 0,
+                processed_count INTEGER NOT NULL DEFAULT 0,
+                imported_count INTEGER NOT NULL DEFAULT 0,
+                skipped_count INTEGER NOT NULL DEFAULT 0,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                current_file TEXT,
+                result_json TEXT NOT NULL DEFAULT '{}',
+                error_message TEXT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
                 tokenized,
@@ -190,6 +235,32 @@ def init_database() -> None:
             db.execute("ALTER TABLE contacts ADD COLUMN status TEXT NOT NULL DEFAULT 'new'")
         if "note" not in contact_columns:
             db.execute("ALTER TABLE contacts ADD COLUMN note TEXT")
+        document_columns = {row["name"] for row in db.execute("PRAGMA table_info(documents)").fetchall()}
+        document_additions = {
+            "detected_type": "TEXT",
+            "source_path": "TEXT",
+            "source_mtime": "REAL",
+            "parser_version": "TEXT NOT NULL DEFAULT '1.0'",
+            "chunker_version": "TEXT NOT NULL DEFAULT '1.0'",
+            "indexed_at": "TEXT",
+            "version": "INTEGER NOT NULL DEFAULT 1",
+            "warnings_json": "TEXT NOT NULL DEFAULT '[]'",
+            "metadata_json": "TEXT NOT NULL DEFAULT '{}'",
+        }
+        for column, declaration in document_additions.items():
+            if column not in document_columns:
+                db.execute(f"ALTER TABLE documents ADD COLUMN {column} {declaration}")
+        chunk_columns = {row["name"] for row in db.execute("PRAGMA table_info(knowledge_chunks)").fetchall()}
+        chunk_additions = {
+            "block_type": "TEXT NOT NULL DEFAULT 'paragraph'",
+            "metadata_json": "TEXT NOT NULL DEFAULT '{}'",
+            "char_count": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for column, declaration in chunk_additions.items():
+            if column not in chunk_columns:
+                db.execute(f"ALTER TABLE knowledge_chunks ADD COLUMN {column} {declaration}")
+        db.execute("CREATE INDEX IF NOT EXISTS documents_source_path_idx ON documents(source_path)")
+        db.execute("CREATE INDEX IF NOT EXISTS knowledge_jobs_created_idx ON knowledge_jobs(created_at DESC)")
         db.execute(
             """
             UPDATE chat_sessions
@@ -206,6 +277,9 @@ def init_database() -> None:
         db.execute("CREATE INDEX IF NOT EXISTS sessions_management_idx ON chat_sessions(management_status,assignee,updated_at DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS audit_created_idx ON audit_logs(created_at DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS notes_session_idx ON session_notes(session_id,created_at DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS messages_session_created_idx ON messages(session_id,created_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS runs_session_started_idx ON agent_runs(session_id,started_at DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS runs_status_started_idx ON agent_runs(status,started_at DESC)")
         db.execute(
             """
             DELETE FROM chat_sessions
@@ -231,3 +305,27 @@ def init_database() -> None:
                 "INSERT INTO prompt_versions(id,version,content,status,change_note,checksum,created_at,published_at) VALUES(?,?,?,?,?,?,?,?)",
                 (str(uuid.uuid4()), 1, DEFAULT_BUSINESS_PROMPT, "published", "从内置客服规则初始化", hashlib.sha256(DEFAULT_BUSINESS_PROMPT.encode("utf-8")).hexdigest(), now, now),
             )
+
+
+def recover_interrupted_runs() -> int:
+    """Close runs left behind by an unclean shutdown before accepting traffic."""
+    now = utc_now()
+    with connect() as db:
+        rows = db.execute("SELECT id,session_id FROM agent_runs WHERE status='running'").fetchall()
+        if not rows:
+            return 0
+        db.execute(
+            "UPDATE agent_runs SET status='interrupted',error_code='service_restarted',finished_at=? WHERE status='running'",
+            (now,),
+        )
+        db.execute(
+            "UPDATE agent_run_tools SET status='interrupted',finished_at=? WHERE finished_at IS NULL AND run_id IN (SELECT id FROM agent_runs WHERE error_code='service_restarted' AND finished_at=?)",
+            (now, now),
+        )
+        session_ids = [row["session_id"] for row in rows]
+        placeholders = ",".join("?" for _ in session_ids)
+        db.execute(
+            f"UPDATE chat_sessions SET status='idle',updated_at=? WHERE id IN ({placeholders})",
+            (now, *session_ids),
+        )
+    return len(rows)

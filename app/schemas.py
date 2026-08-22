@@ -92,6 +92,24 @@ class KnowledgePathInput(BaseModel):
     recursive: bool = True
 
 
+class KnowledgeTermsUpdate(BaseModel):
+    groups: list[list[str]] = Field(default_factory=list, max_length=100)
+
+    @field_validator("groups")
+    @classmethod
+    def validate_groups(cls, groups: list[list[str]]) -> list[list[str]]:
+        normalized: list[list[str]] = []
+        for group in groups:
+            if len(group) > 20:
+                raise ValueError("每组同义词最多 20 个")
+            values = [" ".join(value.split()) for value in group if value.strip()]
+            if any(len(value) > 80 for value in values):
+                raise ValueError("单个术语不能超过 80 个字符")
+            if len(values) >= 2:
+                normalized.append(values)
+        return normalized
+
+
 class ContactInput(BaseModel):
     session_id: str | None = None
     name: str = Field(min_length=1, max_length=80)

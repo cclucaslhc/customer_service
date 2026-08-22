@@ -1,18 +1,34 @@
 import io
 import json
 import sqlite3
+import time
+from pathlib import Path
 
 import pytest
+import pymupdf
+from docx import Document
 from fastapi.testclient import TestClient
+from openpyxl import Workbook
+from openpyxl.chart import BarChart, Reference
+from PIL import Image, ImageDraw, ImageFont
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+from pptx import Presentation
+from pptx.chart.data import CategoryChartData
+from pptx.enum.chart import XL_CHART_TYPE
+from pptx.enum.shapes import MSO_SHAPE
+from pptx.util import Inches
 
 import app.database as database_module
 import app.agent as agent_module
 import app.knowledge as knowledge_module
+import app.knowledge_parsers as knowledge_parsers_module
 from app.chat import ChatOrchestrator
 from app.database import connect, init_database
 from app.knowledge import KnowledgeService, normalize_filename
-from app.main import app
+from app.knowledge_chunking import chunk_document
+from app.knowledge_models import DocumentParseError
+from app.knowledge_parsers import parse_document
+from app.main import app, knowledge_jobs
 from app.providers import ProviderSnapshot
 from app.settings import SECRETS_DIR
 
@@ -20,7 +36,7 @@ from app.settings import SECRETS_DIR
 def reset_data() -> None:
     init_database()
     with connect() as db:
-        for table in ("audit_logs", "session_notes", "agent_run_tools", "contacts", "agent_runs", "messages", "chat_sessions", "knowledge_chunks", "documents"):
+        for table in ("audit_logs", "session_notes", "agent_run_tools", "contacts", "agent_runs", "messages", "chat_sessions", "knowledge_jobs", "knowledge_chunks", "documents"):
             db.execute(f"DELETE FROM {table}")
         db.execute("UPDATE provider_configs SET encrypted_key=NULL, nonce=NULL, last_test_status=NULL, last_test_message=NULL")
         db.execute("UPDATE app_settings SET value='deepseek' WHERE key='active_provider'")
@@ -474,15 +490,275 @@ def test_batch_import_continues_and_reports_each_file(tmp_path) -> None:
         response = client.post("/api/admin/knowledge/import", json={"path": str(source_dir)})
         assert response.status_code == 200, response.text
         result = response.json()
-        assert result["imported_count"] == 1
-        assert result["skipped_count"] == 2
+        assert result["imported_count"] == 2
+        assert result["skipped_count"] == 1
         assert result["failed_count"] == 1
-        assert {item["display_name"] for item in result["skipped"]} == {"B_重复副本.txt", "D_参数表.csv"}
+        assert {item["display_name"] for item in result["skipped"]} == {"B_重复副本.txt"}
         assert result["failed"][0]["display_name"] == "C_损坏手册.pdf"
         assert result["failed"][0]["reason"]
-        document = client.get("/api/admin/documents").json()[0]
-        assert document["display_name"] == "A_中文产品说明.txt"
-        client.delete(f"/api/admin/documents/{document['id']}")
+        documents = client.get("/api/admin/documents").json()
+        assert {item["display_name"] for item in documents} == {"A_中文产品说明.txt", "D_参数表.csv"}
+        for document in documents:
+            client.delete(f"/api/admin/documents/{document['id']}")
+
+
+def test_structured_office_and_pdf_parsers() -> None:
+    word = Document()
+    word.add_heading("产品规格", 1)
+    word.add_paragraph("YC32M103 支持 CAN FD 通信。")
+    table = word.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "型号"
+    table.cell(0, 1).text = "主频"
+    table.cell(1, 0).text = "YC32M103"
+    table.cell(1, 1).text = "120MHz"
+    word_data = io.BytesIO()
+    word.save(word_data)
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "物料清单"
+    sheet.append(["料号", "库存"])
+    sheet.append(["A100", 20])
+    excel_data = io.BytesIO()
+    workbook.save(excel_data)
+
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[1])
+    slide.shapes.title.text = "产品路线"
+    slide.placeholders[1].text = "车规 MCU 已量产"
+    ppt_data = io.BytesIO()
+    presentation.save(ppt_data)
+
+    pdf = pymupdf.open()
+    page = pdf.new_page()
+    page.insert_text((72, 72), "YC32M103 semiconductor datasheet supports CAN FD")
+    pdf_data = pdf.tobytes()
+    pdf.close()
+
+    cases = [
+        ("规格.docx", word_data.getvalue(), {"heading", "paragraph", "table"}),
+        ("物料.xlsx", excel_data.getvalue(), {"table"}),
+        ("路线.pptx", ppt_data.getvalue(), {"heading", "paragraph"}),
+        ("手册.pdf", pdf_data, {"paragraph"}),
+    ]
+    for filename, data, expected_types in cases:
+        parsed = parse_document(filename, data)
+        assert expected_types.issubset({block.block_type for block in parsed.blocks})
+        assert chunk_document(parsed)
+
+
+def test_complex_office_content_is_preserved() -> None:
+    word = Document()
+    word.sections[0].header.paragraphs[0].text = "云芯微电子内部资料"
+    word.sections[0].footer.paragraphs[0].text = "受控文件"
+    paragraph = word.add_paragraph("YC32M103 车规级说明")
+    word.add_comment(paragraph.runs, text="需要质量部门复核", author="QA")
+    word_data = io.BytesIO()
+    word.save(word_data)
+    parsed_word = parse_document("受控文档.docx", word_data.getvalue())
+    assert {"header", "footer", "comment"}.issubset({block.block_type for block in parsed_word.blocks})
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "产能"
+    sheet.append(["月份", "晶圆投入", "良率"])
+    sheet.append(["一月", 1000, 0.98])
+    sheet.append(["二月", 1200, "=C2"])
+    sheet.merge_cells("A4:B4")
+    sheet["A4"] = "合并说明"
+    chart = BarChart()
+    chart.add_data(Reference(sheet, min_col=2, min_row=1, max_row=3), titles_from_data=True)
+    chart.set_categories(Reference(sheet, min_col=1, min_row=2, max_row=3))
+    sheet.add_chart(chart, "E2")
+    excel_data = io.BytesIO()
+    workbook.save(excel_data)
+    parsed_excel = parse_document("产能.xlsx", excel_data.getvalue())
+    assert any("=C2" in block.text for block in parsed_excel.blocks)
+    assert parsed_excel.metadata["merged_ranges"]["产能"] == ["A4:B4"]
+    assert any(block.block_type == "chart" for block in parsed_excel.blocks)
+
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+    slide.shapes.title.text = "季度出货"
+    data = CategoryChartData()
+    data.categories = ["Q1", "Q2"]
+    data.add_series("YC32M", (100, 180))
+    slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(1), Inches(1.5), Inches(5), Inches(3), data)
+    group = slide.shapes.add_group_shape()
+    grouped_text = group.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0), Inches(0), Inches(2), Inches(0.5))
+    grouped_text.text = "组合对象中的量产状态"
+    ppt_data = io.BytesIO()
+    presentation.save(ppt_data)
+    parsed_ppt = parse_document("季度汇报.pptx", ppt_data.getvalue())
+    assert any(block.block_type == "chart" and "YC32M" in block.text for block in parsed_ppt.blocks)
+    assert any("组合对象" in block.text for block in parsed_ppt.blocks)
+
+    pdf = pymupdf.open()
+    page = pdf.new_page()
+    xs, ys = [72, 200, 330], [72, 110, 148]
+    for x in xs:
+        page.draw_line((x, ys[0]), (x, ys[-1]))
+    for y in ys:
+        page.draw_line((xs[0], y), (xs[-1], y))
+    page.insert_text((82, 96), "Model")
+    page.insert_text((210, 96), "Frequency")
+    page.insert_text((82, 134), "YC32M103")
+    page.insert_text((210, 134), "120MHz")
+    pdf_data = pdf.tobytes()
+    pdf.close()
+    parsed_pdf = parse_document("参数表.pdf", pdf_data)
+    assert any(block.block_type == "table" and "YC32M103" in block.text for block in parsed_pdf.blocks)
+
+
+def test_real_ocr_for_image_and_scanned_pdf() -> None:
+    font_path = Path(r"C:\Windows\Fonts\arial.ttf")
+    if not font_path.exists():
+        pytest.skip("系统字体不可用")
+    image = Image.new("RGB", (900, 160), "white")
+    ImageDraw.Draw(image).text((30, 35), "YC32M103 CAN FD 120MHz", fill="black", font=ImageFont.truetype(str(font_path), 48))
+    image_data = io.BytesIO()
+    image.save(image_data, format="PNG")
+    raw_image = image_data.getvalue()
+    parsed_image = parse_document("扫描图片.png", raw_image)
+    assert any("YC32M103" in block.text for block in parsed_image.blocks)
+
+    pdf = pymupdf.open()
+    page = pdf.new_page(width=900, height=160)
+    page.insert_image(page.rect, stream=raw_image)
+    scanned_pdf = pdf.tobytes()
+    pdf.close()
+    parsed_pdf = parse_document("扫描手册.pdf", scanned_pdf)
+    assert any(block.block_type == "ocr" and "YC32M103" in block.text for block in parsed_pdf.blocks)
+
+
+def test_legacy_office_conversion_when_libreoffice_is_available() -> None:
+    if knowledge_parsers_module._find_soffice() is None:
+        pytest.skip("LibreOffice 不可用")
+    raw = br'{\rtf1\ansi\deff0 {\fonttbl {\f0 Arial;}}\f0\fs24 YC32M103 supports CAN FD.}'
+    parsed = parse_document("旧版规格.rtf", raw)
+    assert parsed.document_type == ".rtf"
+    assert parsed.metadata["converted_from"] == ".rtf"
+    assert any("YC32M103" in block.text for block in parsed.blocks)
+
+
+def test_parser_resource_limits_fail_safely(monkeypatch) -> None:
+    monkeypatch.setattr(knowledge_parsers_module, "MAX_IMAGE_PIXELS", 100)
+    image = Image.new("RGB", (20, 20), "white")
+    image_data = io.BytesIO()
+    image.save(image_data, format="PNG")
+    with pytest.raises(DocumentParseError, match="OCR 像素上限"):
+        parse_document("oversize.png", image_data.getvalue())
+
+    monkeypatch.setattr(knowledge_parsers_module, "MAX_PDF_PAGES", 1)
+    pdf = pymupdf.open()
+    pdf.new_page()
+    pdf.new_page()
+    data = pdf.tobytes()
+    pdf.close()
+    with pytest.raises(DocumentParseError, match="PDF 超过"):
+        parse_document("too-many-pages.pdf", data)
+
+    monkeypatch.setattr(knowledge_parsers_module, "MAX_SPREADSHEET_CELLS", 3)
+    parsed = parse_document("large.csv", "a,b\n1,2\n3,4\n".encode())
+    assert parsed.warnings and "后续内容已截断" in parsed.warnings[0]
+
+
+def test_source_update_and_force_reparse_keep_document_identity(tmp_path) -> None:
+    source = tmp_path / "产品说明.txt"
+    source.write_text("YC32 第一版支持 CAN。", encoding="utf-8")
+    with TestClient(app) as client:
+        first = client.post("/api/admin/knowledge/import", json={"path": str(source)}).json()
+        document_id = first["imported"][0]["id"]
+        source.write_text("YC32 第二版支持 CAN FD。", encoding="utf-8")
+        second = client.post("/api/admin/knowledge/import", json={"path": str(source)}).json()
+        assert second["imported"][0]["id"] == document_id
+        assert second["imported"][0]["version"] == 2
+        reparsed = client.post(f"/api/admin/documents/{document_id}/reparse")
+        assert reparsed.status_code == 200, reparsed.text
+        assert reparsed.json()["version"] == 3
+        assert KnowledgeService().search("第二版 CAN FD")[0]["document_id"] == document_id
+
+
+def test_persistent_background_import_job_reports_progress_and_results(tmp_path) -> None:
+    source = tmp_path / "background-import"
+    source.mkdir()
+    content = "YC32M103 支持 CAN FD 和 120MHz 主频。"
+    (source / "产品.txt").write_text(content, encoding="utf-8")
+    (source / "重复.txt").write_text(content, encoding="utf-8")
+    (source / "损坏.pdf").write_bytes(b"not-a-pdf")
+
+    with TestClient(app) as client:
+        created = client.post("/api/admin/knowledge/jobs", json={"path": str(source), "recursive": True})
+        assert created.status_code == 202, created.text
+        job_id = created.json()["id"]
+        job = created.json()
+        for _ in range(200):
+            job = client.get(f"/api/admin/knowledge/jobs/{job_id}").json()
+            if job["status"] not in {"pending", "running"}:
+                break
+            time.sleep(0.01)
+        assert job["status"] == "partial"
+        assert job["total_count"] == 3
+        assert job["processed_count"] == 3
+        assert job["imported_count"] == 1
+        assert job["skipped_count"] == 1
+        assert job["failed_count"] == 1
+        assert job["result"]["failed"][0]["display_name"] == "损坏.pdf"
+        assert client.get("/api/admin/knowledge/jobs").json()[0]["id"] == job_id
+
+
+def test_background_job_recovery_restarts_interrupted_work(tmp_path) -> None:
+    source = tmp_path / "recover"
+    source.mkdir()
+    (source / "恢复任务.txt").write_text("恢复后的任务可以继续建立索引。", encoding="utf-8")
+    job_id = "recover-job"
+    with connect() as db:
+        db.execute(
+            "INSERT INTO knowledge_jobs(id,source_path,recursive,status,stage,total_count,created_at,started_at) VALUES(?,?,?,?,?,?,?,?)",
+            (job_id, str(source), 1, "running", "parsing", 1, database_module.utc_now(), database_module.utc_now()),
+        )
+    knowledge_jobs.recover()
+    for _ in range(200):
+        job = knowledge_jobs.get(job_id)
+        if job["status"] not in {"pending", "running"}:
+            break
+        time.sleep(0.01)
+    assert job["status"] == "complete"
+    assert job["processed_count"] == 1
+    assert KnowledgeService().search("恢复任务 建立索引")
+
+
+def test_hybrid_retrieval_expands_enterprise_synonyms_and_explains_ranking() -> None:
+    service = KnowledgeService()
+    service.ingest("选型指南.txt", "YC32M103 是一款车规 MCU，支持 CAN FD。ZDP 用于零缺陷管理。".encode())
+    builtin = service.search("汽车级单片机 CAN", 5)
+    assert builtin and builtin[0]["display_name"] == "选型指南.txt"
+    assert builtin[0]["ranking"]["matched_synonyms"]
+    assert not any("应用笔记" in group for group in builtin[0]["ranking"]["matched_synonyms"])
+    assert builtin[0]["relevance"] > 0
+
+    with TestClient(app) as client:
+        saved = client.put("/api/admin/knowledge/terms", json={"groups": [["零缺陷计划", "ZDP"]]})
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["custom"] == [["零缺陷计划", "ZDP"]]
+        hits = client.post("/api/admin/knowledge/search-test", json={"query": "零缺陷计划", "limit": 5}).json()["items"]
+        assert hits and "ZDP" in hits[0]["content"]
+        assert "零缺陷计划 / ZDP" in hits[0]["ranking"]["matched_synonyms"]
+
+
+def test_retrieval_eval_corpus_reaches_full_top3_recall() -> None:
+    corpus = json.loads((Path(__file__).parent / "fixtures" / "knowledge_retrieval_eval.json").read_text(encoding="utf-8"))
+    service = KnowledgeService()
+    for document in corpus["documents"]:
+        service.ingest(document["filename"], document["content"].encode())
+    hits = 0
+    for case in corpus["queries"]:
+        results = service.search(case["query"], 3)
+        if case["expected"] in {item["display_name"] for item in results}:
+            hits += 1
+    assert hits / len(corpus["queries"]) == 1.0
+    for query in corpus["negative_queries"]:
+        assert service.search(query, 3) == []
 
 
 def test_contact_validation_and_storage() -> None:

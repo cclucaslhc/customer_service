@@ -98,7 +98,28 @@ type DocumentRow = {
   chunk_count: number;
   status: string;
   error_message?: string;
+  detected_type?: string;
+  source_path?: string;
+  parser_version?: string;
+  chunker_version?: string;
+  version?: number;
+  warnings?: string[];
+  metadata?: Record<string, unknown>;
   created_at: string;
+};
+type KnowledgeImportIssue = { path: string; display_name: string; reason: string };
+type KnowledgeJob = {
+  id: string;
+  status: "pending" | "running" | "complete" | "partial" | "failed";
+  stage: string;
+  total_count: number;
+  processed_count: number;
+  imported_count: number;
+  skipped_count: number;
+  failed_count: number;
+  current_file?: string;
+  error_message?: string;
+  result?: { skipped?: KnowledgeImportIssue[]; failed?: KnowledgeImportIssue[] };
 };
 type AuditRow = {
   id: string;
@@ -994,16 +1015,23 @@ function PromptsPage({ setNotice }: { setNotice: (text: string) => void }) {
 function KnowledgePage({ setNotice }: { setNotice: (text: string) => void }) {
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [path, setPath] = useState("");
+  const [termsText, setTermsText] = useState("");
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<
-    { display_name: string; section?: string; content: string; score: number }[]
+    { display_name: string; section?: string; content: string; score: number; relevance?: number; ranking?: { matched_synonyms?: string[] } }[]
   >([]);
+  const [importIssues, setImportIssues] = useState<
+    { path: string; display_name: string; reason: string; kind: "跳过" | "失败" }[]
+  >([]);
+  const [importJob, setImportJob] = useState<KnowledgeJob | null>(null);
   const [detail, setDetail] = useState<{
     document: DocumentRow;
     chunks: {
       id: number;
       section?: string;
       location?: string;
+      block_type?: string;
+      char_count?: number;
       content: string;
     }[];
   } | null>(null);
@@ -1013,23 +1041,38 @@ function KnowledgePage({ setNotice }: { setNotice: (text: string) => void }) {
       "/api/admin/knowledge/location",
     );
     setPath((current) => current || location.path);
+    const terms = await api<{ custom: string[][] }>("/api/admin/knowledge/terms");
+    setTermsText(terms.custom.map((group) => group.join(" = ")).join("\n"));
   };
   useEffect(() => {
     void load();
   }, []);
+  useEffect(() => {
+    if (!importJob || !["pending", "running"].includes(importJob.status)) return;
+    const timer = window.setInterval(async () => {
+      const job = await api<KnowledgeJob>(`/api/admin/knowledge/jobs/${importJob.id}`);
+      setImportJob(job);
+      if (!["pending", "running"].includes(job.status)) {
+        const skipped = job.result?.skipped || [];
+        const failed = job.result?.failed || [];
+        setImportIssues([
+          ...skipped.map((item) => ({ ...item, kind: "跳过" as const })),
+          ...failed.map((item) => ({ ...item, kind: "失败" as const })),
+        ]);
+        setNotice(`导入 ${job.imported_count}，跳过 ${job.skipped_count}，失败 ${job.failed_count}`);
+        await load();
+      }
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [importJob?.id, importJob?.status]);
   const importPath = async () => {
-    const result = await api<{
-      imported_count: number;
-      skipped_count: number;
-      failed_count: number;
-    }>(
-      "/api/admin/knowledge/import",
+    const job = await api<KnowledgeJob>(
+      "/api/admin/knowledge/jobs",
       jsonRequest("POST", { path, recursive: true }),
     );
-    setNotice(
-      `导入 ${result.imported_count}，跳过 ${result.skipped_count}，失败 ${result.failed_count}`,
-    );
-    await load();
+    setImportIssues([]);
+    setImportJob(job);
+    setNotice("导入任务已创建，可继续使用管理界面");
   };
   const upload = async (files: File[]) => {
     for (const file of files) {
@@ -1062,15 +1105,29 @@ function KnowledgePage({ setNotice }: { setNotice: (text: string) => void }) {
             onChange={(e) => setPath(e.target.value)}
             placeholder="本机文件或目录路径"
           />
-          <button className="primary" onClick={() => void importPath()}>
-            扫描并导入
+          <button className="primary" disabled={!!importJob && ["pending", "running"].includes(importJob.status)} onClick={() => void importPath()}>
+            {importJob && ["pending", "running"].includes(importJob.status) ? "正在后台导入…" : "扫描并导入"}
           </button>
           <label className="file-button">
             选择文件
             <input
               type="file"
               multiple
-              accept=".pdf,.docx,.md,.txt"
+              accept=".pdf,.doc,.docx,.wps,.rtf,.odt,.xls,.xlsx,.et,.ods,.csv,.tsv,.ppt,.pptx,.dps,.odp,.md,.txt,.html,.htm,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp"
+              onChange={(e) => {
+                const files = Array.from(e.currentTarget.files || []);
+                e.currentTarget.value = "";
+                void upload(files);
+              }}
+            />
+          </label>
+          <label className="file-button">
+            选择目录
+            <input
+              type="file"
+              multiple
+              accept=".pdf,.doc,.docx,.wps,.rtf,.odt,.xls,.xlsx,.et,.ods,.csv,.tsv,.ppt,.pptx,.dps,.odp,.md,.txt,.html,.htm,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp"
+              ref={(element) => element?.setAttribute("webkitdirectory", "")}
               onChange={(e) => {
                 const files = Array.from(e.currentTarget.files || []);
                 e.currentTarget.value = "";
@@ -1090,6 +1147,35 @@ function KnowledgePage({ setNotice }: { setNotice: (text: string) => void }) {
             重建索引
           </button>
         </div>
+        {importJob && (
+          <div className="job-progress" aria-live="polite">
+            <div><strong>{importJob.stage}</strong><span>{importJob.processed_count}/{importJob.total_count}</span></div>
+            <progress value={importJob.processed_count} max={Math.max(importJob.total_count, 1)} />
+            {importJob.current_file && <small>{importJob.current_file}</small>}
+            {importJob.error_message && <small className="error-text">{importJob.error_message}</small>}
+          </div>
+        )}
+        <details className="terms-editor">
+          <summary>企业术语与同义词</summary>
+          <p className="muted">每行一组，用等号或逗号分隔，例如：产品规格书 = datasheet = 数据手册。</p>
+          <textarea value={termsText} onChange={(event) => setTermsText(event.target.value)} rows={5} placeholder="术语 = 同义词 = abbreviation" />
+          <button onClick={async () => {
+            const groups = termsText.split(/\r?\n/).map((line) => line.split(/[=,，]/).map((value) => value.trim()).filter(Boolean)).filter((group) => group.length >= 2);
+            await api("/api/admin/knowledge/terms", jsonRequest("PUT", { groups }));
+            setNotice(`已保存 ${groups.length} 组企业术语`);
+          }}>保存术语</button>
+        </details>
+        {importIssues.length > 0 && (
+          <div className="import-report">
+            <strong>逐文件处理结果</strong>
+            {importIssues.map((item, index) => (
+              <div className={`import-issue ${item.kind === "失败" ? "failed" : "skipped"}`} key={`${item.path}-${index}`}>
+                <span>{item.kind}</span>
+                <div><b>{item.display_name || item.path}</b><small>{item.reason}</small></div>
+              </div>
+            ))}
+          </div>
+        )}
       </Panel>
       <div className="detail-columns">
         <Panel title={`知识文档 · ${documents.length}`}>
@@ -1106,7 +1192,7 @@ function KnowledgePage({ setNotice }: { setNotice: (text: string) => void }) {
                   <strong>{doc.display_name}</strong>
                   <small>
                     {(doc.size / 1024).toFixed(1)} KB · {doc.chunk_count} 个片段
-                    · {doc.status}
+                    · {doc.detected_type || doc.status} · v{doc.version || 1}
                   </small>
                 </div>
                 <span>预览 →</span>
@@ -1131,23 +1217,43 @@ function KnowledgePage({ setNotice }: { setNotice: (text: string) => void }) {
                 <strong>
                   {hit.display_name} / {hit.section || "正文"}
                 </strong>
+                <small>相关度 {hit.relevance?.toFixed(2) || "-"}{hit.ranking?.matched_synonyms?.length ? ` · ${hit.ranking.matched_synonyms.join("；")}` : ""}</small>
                 <p>{hit.content}</p>
               </div>
             ))}
           </Panel>
           {detail && (
             <Panel title={detail.document.display_name}>
+              <p className="muted">
+                {detail.document.detected_type || detail.document.status} · 解析器 {detail.document.parser_version || "1.0"}
+                {detail.document.source_path ? ` · ${detail.document.source_path}` : ""}
+              </p>
+              {!!detail.document.warnings?.length && (
+                <div className="import-report">
+                  {detail.document.warnings.map((warning, index) => <div className="import-issue skipped" key={index}>{warning}</div>)}
+                </div>
+              )}
               <div className="chunk-preview">
                 {detail.chunks.map((chunk, index) => (
                   <details key={chunk.id}>
                     <summary>
                       片段 {index + 1} ·{" "}
-                      {chunk.section || chunk.location || "正文"}
+                      {chunk.section || chunk.location || "正文"} · {chunk.block_type || "文本"}
                     </summary>
                     <p>{chunk.content}</p>
                   </details>
                 ))}
               </div>
+              <button
+                onClick={async () => {
+                  await api(`/api/admin/documents/${detail.document.id}/reparse`, { method: "POST" });
+                  setNotice("已使用当前解析器重新建库");
+                  setDetail(await api(`/api/admin/documents/${detail.document.id}`));
+                  await load();
+                }}
+              >
+                重新解析
+              </button>
               <button
                 className="danger"
                 onClick={() => void remove(detail.document.id)}

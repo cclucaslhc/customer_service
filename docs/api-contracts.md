@@ -86,6 +86,7 @@ id, title, status, archived_at, deleted_at, message_count, last_message, created
 | --- | --- | --- |
 | `run_started` | `run_id` | 本次运行已建立 |
 | `provider` | `provider`, `model` | 本次运行的不可变供应商快照 |
+| `ping` | `timestamp` | 供应商暂时无输出时的 SSE 保活心跳；前端无需展示 |
 | `token` | `text` | 增量回答文本 |
 | `answer_reset` | 无 | 清除工具调用前或校验失败的临时文本 |
 | `tool_start` | `tool` | Agent 开始执行工具；不得包含工具参数或敏感数据 |
@@ -99,8 +100,8 @@ id, title, status, archived_at, deleted_at, message_count, last_message, created
 事件顺序约束：
 
 ```text
-run_started → provider → (token* → answer_reset? → tool_start → tool_end)* → token* → citation* → contact_form? → done
-run_started → provider → (token | answer_reset | tool_start | tool_end)* → interrupted
+run_started → provider → (ping | token* → answer_reset? → tool_start → tool_end)* → token* → citation* → contact_form? → done
+run_started → provider → (ping | token | answer_reset | tool_start | tool_end)* → interrupted
 error
 ```
 
@@ -111,6 +112,18 @@ error
 响应或其他非工具阶段异常使用 `model_error`。两者都会结束运行且不会发送 `done`；
 服务端日志只记录内部运行标识、供应商/模型、工具名和异常类型，不记录用户正文、
 工具参数、工具结果、供应商响应正文或密钥。
+
+并发舱位等待超时使用 `service_busy`，并额外返回整数秒 `retry_after`；客户端应延迟并加入随机抖动后重试。单次模型运行超过服务端上限使用 `model_timeout`。这两类错误都不会发送 `done`。
+
+## 服务健康 API
+
+| 接口 | 含义 |
+| --- | --- |
+| `GET /health/live` | 仅验证 ASGI 进程可响应 |
+| `GET /health/ready` | 验证数据库可用，并返回当前模型并发舱位 |
+| `GET /health` | 兼容健康接口，额外返回 SQLite journal mode、主密钥状态和模型并发舱位 |
+
+所有 HTTP 响应包含 `X-Request-ID`；客户端传入该请求头时服务端原样回传，否则自动生成 UUID。
 
 ## 企业管理 API
 
@@ -177,12 +190,19 @@ Agent 每次运行记录不可变的 `prompt_version_id`；工具轨迹只记录
 | --- | --- |
 | `GET /api/admin/documents` | 列出文档元数据 |
 | `POST /api/admin/documents` | `multipart/form-data` 上传 `file` |
+| `GET /api/admin/documents/{id}` | 返回文档、解析警告和带块类型/位置元数据的切块预览 |
+| `POST /api/admin/documents/{id}/reparse` | 使用当前解析器和切块器重新建库，版本递增 |
 | `DELETE /api/admin/documents/{id}` | 删除原文件、片段与索引 |
 | `GET /api/admin/knowledge/location` | 返回本机托管知识库目录和支持格式 |
 | `POST /api/admin/knowledge/import` | 输入本机文件或目录路径，复制到托管目录并批量建立索引 |
+| `POST /api/admin/knowledge/jobs` | 创建持久化后台路径导入任务，返回 HTTP 202 和任务状态 |
+| `GET /api/admin/knowledge/jobs/{id}` | 查询阶段、当前文件、进度计数和逐文件结果 |
+| `GET /api/admin/knowledge/jobs` | 查询最近导入任务 |
+| `GET /api/admin/knowledge/terms` | 查询内置和自定义企业同义词 |
+| `PUT /api/admin/knowledge/terms` | 保存自定义同义词组 |
 | `POST /api/admin/index/rebuild` | 重建所有分词和 FTS5 索引 |
 
-当前支持 `.pdf`、`.docx`、`.md`、`.txt`，单文件最大 20 MB；扫描 PDF 不支持 OCR。
+当前支持 PDF，DOC/DOCX/WPS/RTF/ODT，XLS/XLSX/ET/ODS/CSV/TSV，PPT/PPTX/DPS/ODP，MD/TXT/HTML，以及 PNG/JPEG/TIFF/BMP/WebP。单文件最大 50 MB；旧版 Office/WPS 和 OpenDocument 依赖本机 LibreOffice，扫描 PDF、图片及 Office 嵌入图片使用 OCR。
 
 批量路径导入始终返回逐文件结果；单个损坏文件不会中断同批其他文件。重复内容和不支持格式计入 `skipped`，解析或读取错误计入 `failed`：
 
@@ -196,7 +216,9 @@ Agent 每次运行记录不可变的 `prompt_version_id`；工具轨迹只记录
 }
 ```
 
-单文件上传遇到重复内容返回 HTTP `409`。所有未定义的 `/api` 或 `/api/*` 请求返回 JSON `404`，不得回退到前端 `index.html`。
+单文件上传遇到重复内容返回 HTTP `409`。路径导入时同一路径、同内容计入跳过；同一路径内容变化会保留文档 ID、替换旧切块并增加 `version`。所有未定义的 `/api` 或 `/api/*` 请求返回 JSON `404`，不得回退到前端 `index.html`。
+
+管理界面使用后台任务接口。任务状态为 `pending/running/complete/partial/failed`，阶段包括 `scanning/reading/parsing/chunking/indexing`；`result` 保留与同步导入相同的 `imported/skipped/failed` 逐文件结构。
 
 ## 联系登记 API
 
@@ -244,8 +266,10 @@ search(query: str, limit: int = 6) -> list[dict]
 `search` 的每个结果至少包含：
 
 ```text
-document_id, display_name, content, section, location, score
+document_id, display_name, content, section, location, block_type, score, relevance, ranking
 ```
+
+`score` 是原始 BM25 分值；`relevance` 是最终降序相关度；`ranking` 提供词覆盖、短语、章节、型号、字符相似度和命中同义词等解释字段。调用方应按服务返回顺序消费结果，不自行重新解释 BM25 正负号。
 
 调用方不得依赖 `knowledge_chunks` 或 `knowledge_fts` 的内部字段和触发器。
 

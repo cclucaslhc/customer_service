@@ -1,3 +1,4 @@
+import json
 import uuid
 from contextlib import asynccontextmanager
 
@@ -8,19 +9,28 @@ from fastapi.staticfiles import StaticFiles
 
 from app.chat import ChatOrchestrator
 from app import admin as admin_service
-from app.database import connect, init_database, utc_now
+from app.database import connect, init_database, recover_interrupted_runs, utc_now
 from app.knowledge import KnowledgeDuplicateError, KnowledgeError, KnowledgeService
+from app.knowledge_jobs import KnowledgeJobService
+from app.knowledge_terms import DEFAULT_SYNONYM_GROUPS, all_synonym_groups, custom_synonym_groups, save_custom_synonym_groups
 from app.providers import ModelGateway, ProviderError
-from app.schemas import ActiveProviderUpdate, AdminSessionUpdate, ChatMessageInput, ContactAdminUpdate, ContactInput, KnowledgePathInput, KnowledgeSearchInput, MessageFeedbackInput, PromptDraftInput, PromptRollbackInput, ProviderTest, ProviderUpdate, SessionNoteInput, SessionTitleUpdate
+from app.schemas import ActiveProviderUpdate, AdminSessionUpdate, ChatMessageInput, ContactAdminUpdate, ContactInput, KnowledgePathInput, KnowledgeSearchInput, KnowledgeTermsUpdate, MessageFeedbackInput, PromptDraftInput, PromptRollbackInput, ProviderTest, ProviderUpdate, SessionNoteInput, SessionTitleUpdate
 from app import prompts as prompt_service
 from app.security import SecretStore
-from app.settings import FRONTEND_DIST, MASTER_KEY_PATH
+from app.settings import FRONTEND_DIST, MASTER_KEY_PATH, MAX_UPLOAD_BYTES
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_database()
-    yield
+    recover_interrupted_runs()
+    knowledge.ensure_index_current()
+    knowledge_jobs.recover()
+    try:
+        yield
+    finally:
+        await chat.shutdown()
+        await gateway.close()
 
 
 app = FastAPI(title="AI 客服", version="0.1.0", lifespan=lifespan)
@@ -28,7 +38,16 @@ app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http
 secrets = SecretStore()
 gateway = ModelGateway(secrets)
 knowledge = KnowledgeService()
+knowledge_jobs = KnowledgeJobService(knowledge)
 chat = ChatOrchestrator(gateway, knowledge)
+
+
+@app.middleware("http")
+async def request_context(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 
 @app.middleware("http")
@@ -43,7 +62,29 @@ async def local_requests_only(request: Request, call_next):
 def health():
     with connect() as db:
         db.execute("SELECT 1").fetchone()
-    return {"status": "ok", "database": True, "master_key": MASTER_KEY_PATH.exists()}
+        journal_mode = db.execute("PRAGMA journal_mode").fetchone()[0]
+    return {
+        "status": "ok",
+        "database": True,
+        "database_journal_mode": journal_mode,
+        "master_key": MASTER_KEY_PATH.exists(),
+        "model_runs": chat.capacity(),
+    }
+
+
+@app.get("/health/live")
+def liveness():
+    return {"status": "ok"}
+
+
+@app.get("/health/ready")
+def readiness():
+    try:
+        with connect() as db:
+            db.execute("SELECT 1").fetchone()
+    except Exception:
+        return JSONResponse({"status": "unavailable", "database": False}, status_code=503)
+    return {"status": "ready", "database": True, "model_runs": chat.capacity()}
 
 
 @app.post("/api/chat/sessions")
@@ -102,7 +143,15 @@ def send_message(session_id: str, payload: ChatMessageInput):
         raise HTTPException(404, "会话不存在")
     if session and session["archived_at"]:
         raise HTTPException(409, "已归档的会话不能继续发送消息，请先恢复")
-    return StreamingResponse(chat.stream(session_id, payload.content), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return StreamingResponse(
+        chat.stream(session_id, payload.content),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.put("/api/chat/sessions/{session_id}/messages/{message_id}/feedback")
@@ -303,19 +352,50 @@ def import_knowledge_path(payload: KnowledgePathInput):
         raise HTTPException(400, str(exc)) from exc
 
 
+@app.post("/api/admin/knowledge/jobs", status_code=202)
+def create_knowledge_job(payload: KnowledgePathInput):
+    try:
+        job = knowledge_jobs.create(payload.path, payload.recursive)
+        admin_service.audit("knowledge.job.create", "knowledge_job", job["id"], "创建知识库导入任务", {"source_path": job["source_path"]})
+        return job
+    except KnowledgeError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/admin/knowledge/jobs")
+def list_knowledge_jobs(limit: int = Query(20, ge=1, le=100)):
+    return knowledge_jobs.list(limit)
+
+
+@app.get("/api/admin/knowledge/jobs/{job_id}")
+def get_knowledge_job(job_id: str):
+    try:
+        return knowledge_jobs.get(job_id)
+    except KnowledgeError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
 @app.post("/api/admin/documents")
 async def upload_document(file: UploadFile = File(...)):
     try:
-        data = await file.read()
-        result = knowledge.ingest(file.filename or "document.txt", data)
+        data = bytearray()
+        while chunk := await file.read(1024 * 1024):
+            data.extend(chunk)
+            if len(data) > MAX_UPLOAD_BYTES:
+                raise HTTPException(413, f"文件不能超过 {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
+        result = knowledge.ingest(file.filename or "document.txt", bytes(data))
         admin_service.audit("knowledge.upload", "document", result["id"], "上传知识文档", {"display_name": result["display_name"]})
         return result
     except KnowledgeDuplicateError as exc:
         raise HTTPException(409, str(exc)) from exc
     except KnowledgeError as exc:
         raise HTTPException(400, str(exc)) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(400, "文档解析失败") from exc
+    finally:
+        await file.close()
 
 
 @app.delete("/api/admin/documents/{document_id}")
@@ -326,6 +406,16 @@ def delete_document(document_id: str):
         return {"deleted": True}
     except KnowledgeError as exc:
         raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/api/admin/documents/{document_id}/reparse")
+def reparse_document(document_id: str):
+    try:
+        result = knowledge.reparse(document_id)
+        admin_service.audit("knowledge.reparse", "document", document_id, "重新解析知识文档", {"version": result["version"]})
+        return result
+    except KnowledgeError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.post("/api/admin/index/rebuild")
@@ -341,13 +431,33 @@ def document_detail(document_id: str):
         document = db.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone()
         if not document:
             raise HTTPException(404, "文档不存在")
-        chunks = db.execute("SELECT id,chunk_index,section,location,substr(content,1,600) content FROM knowledge_chunks WHERE document_id=? ORDER BY chunk_index", (document_id,)).fetchall()
-    return {"document": dict(document), "chunks": [dict(row) for row in chunks]}
+        chunks = db.execute("SELECT id,chunk_index,section,location,block_type,char_count,metadata_json,substr(content,1,1200) content FROM knowledge_chunks WHERE document_id=? ORDER BY chunk_index", (document_id,)).fetchall()
+    document_value = dict(document)
+    document_value["warnings"] = json.loads(document_value.pop("warnings_json", "[]") or "[]")
+    document_value["metadata"] = json.loads(document_value.pop("metadata_json", "{}") or "{}")
+    chunk_values = []
+    for row in chunks:
+        value = dict(row)
+        value["metadata"] = json.loads(value.pop("metadata_json", "{}") or "{}")
+        chunk_values.append(value)
+    return {"document": document_value, "chunks": chunk_values}
 
 
 @app.post("/api/admin/knowledge/search-test")
 def knowledge_search_test(payload: KnowledgeSearchInput):
     return {"items": knowledge.search(payload.query, payload.limit)}
+
+
+@app.get("/api/admin/knowledge/terms")
+def knowledge_terms():
+    return {"defaults": DEFAULT_SYNONYM_GROUPS, "custom": custom_synonym_groups(), "all": all_synonym_groups()}
+
+
+@app.put("/api/admin/knowledge/terms")
+def update_knowledge_terms(payload: KnowledgeTermsUpdate):
+    groups = save_custom_synonym_groups(payload.groups)
+    admin_service.audit("knowledge.terms.update", "knowledge", None, "更新知识库同义词", {"group_count": len(groups)})
+    return {"defaults": DEFAULT_SYNONYM_GROUPS, "custom": groups, "all": all_synonym_groups()}
 
 
 @app.post("/api/contacts")

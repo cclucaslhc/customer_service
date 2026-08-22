@@ -1,0 +1,32 @@
+{
+  "documents": [
+    {
+      "filename": "YC32M103_数据手册.txt",
+      "content": "YC32M103 是面向汽车电子的 32 位 MCU，最高主频 120MHz，支持 CAN FD、UART 和 SPI。"
+    },
+    {
+      "filename": "YCP6213A_电源规格.txt",
+      "content": "YCP6213A 是同步降压电源管理芯片，输入电压范围 4.5V 至 24V，持续输出电流 3A。"
+    },
+    {
+      "filename": "RMA_售后流程.txt",
+      "content": "退货授权 RMA 必须提供订单号、批次、失效数量和现象描述，质量部门完成失效分析后给出处置意见。"
+    },
+    {
+      "filename": "PCN_变更流程.txt",
+      "content": "产品变更通知 PCN 覆盖晶圆厂、封装材料、测试程序和生产地点的重要变化，并按客户协议提前通知。"
+    },
+    {
+      "filename": "MSL_存储规范.txt",
+      "content": "湿敏等级 MSL3 器件开封后应控制车间寿命，超时后按规定温度烘烤，避免回流焊爆米花失效。"
+    }
+  ],
+  "queries": [
+    {"query": "汽车级单片机支持什么总线", "expected": "YC32M103_数据手册.txt"},
+    {"query": "YCP6213A 输入电压和输出电流", "expected": "YCP6213A_电源规格.txt"},
+    {"query": "退换货需要哪些失效资料", "expected": "RMA_售后流程.txt"},
+    {"query": "封装材料变化需要什么通知", "expected": "PCN_变更流程.txt"},
+    {"query": "湿敏器件开封超时如何处理", "expected": "MSL_存储规范.txt"}
+  ],
+  "negative_queries": ["员工食堂今天供应什么菜", "公司班车几点发车"]
+}
