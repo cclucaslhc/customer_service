@@ -25,6 +25,7 @@ def _positive_float(name: str, default: float) -> float:
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 KNOWLEDGE_DIR = DATA_DIR / "knowledge"
+KNOWLEDGE_ASSET_DIR = DATA_DIR / "knowledge_assets"
 # 保留旧名称供已有调用方兼容；新文档统一由 knowledge 目录托管。
 UPLOAD_DIR = KNOWLEDGE_DIR
 LEGACY_UPLOAD_DIR = DATA_DIR / "uploads"
@@ -52,5 +53,5 @@ ALLOWED_EXTENSIONS = {
 
 
 def ensure_directories() -> None:
-    for path in (DATA_DIR, KNOWLEDGE_DIR, SECRETS_DIR):
+    for path in (DATA_DIR, KNOWLEDGE_DIR, KNOWLEDGE_ASSET_DIR, SECRETS_DIR):
         path.mkdir(parents=True, exist_ok=True)

@@ -54,6 +54,14 @@ Set-Location frontend
 npm.cmd run build
 ```
 
+知识库检索与 Agent 编排的隔离评测：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\evaluate.py --repetitions 30
+```
+
+指标定义、适用范围和结果解读见 `docs/evaluation.md`。评测不读取生产数据库、上传文档或模型密钥。
+
 ## 数据安全
 
 - 主密钥首次启动时生成在 `data/secrets/master.key`。

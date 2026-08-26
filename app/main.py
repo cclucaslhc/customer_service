@@ -337,6 +337,25 @@ def list_documents():
     return knowledge.list_documents()
 
 
+@app.get("/api/knowledge/assets/{asset_id}")
+def knowledge_asset(asset_id: str):
+    try:
+        path, media_type = knowledge.asset_file(asset_id)
+    except KnowledgeError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename="knowledge-image.png",
+        content_disposition_type="inline",
+        headers={
+            "Cache-Control": "private, max-age=86400",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+        },
+    )
+
+
 @app.get("/api/admin/knowledge/location")
 def knowledge_location():
     return knowledge.location()
@@ -440,7 +459,7 @@ def document_detail(document_id: str):
         value = dict(row)
         value["metadata"] = json.loads(value.pop("metadata_json", "{}") or "{}")
         chunk_values.append(value)
-    return {"document": document_value, "chunks": chunk_values}
+    return {"document": document_value, "chunks": chunk_values, "assets": knowledge.list_assets(document_id)}
 
 
 @app.post("/api/admin/knowledge/search-test")

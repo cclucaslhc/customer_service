@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import ReactMarkdown from "react-markdown";
 import { ApiError, api } from "./api";
+import MarkdownContent from "./MarkdownContent";
 import {
   adminPath,
   adminRouteFromPath,
@@ -11,6 +11,7 @@ import "./admin.css";
 
 type ModuleKey = AdminModule;
 type Paged<T> = { items: T[]; total: number; page: number; page_size: number };
+type KnowledgeImage = { id: string; url: string; alt_text: string; location: string; width: number; height: number; media_type: string };
 type SessionRow = {
   id: string;
   title: string;
@@ -37,7 +38,7 @@ type Message = {
   created_at: string;
   provider?: string;
   model?: string;
-  citations?: { document: string; section?: string; excerpt: string }[];
+  citations?: { document: string; section?: string; excerpt: string; images?: KnowledgeImage[] }[];
 };
 type Run = {
   id: string;
@@ -788,18 +789,15 @@ function SessionDetailPage({
                       : ""}
                   </small>
                 </header>
-                <ReactMarkdown>{message.content}</ReactMarkdown>
+                <MarkdownContent>{message.content}</MarkdownContent>
                 {message.citations?.length ? (
                   <details>
                     <summary>引用资料 {message.citations.length} 条</summary>
                     {message.citations.map((citation, index) => (
-                      <p key={index}>
-                        <b>
-                          {citation.document} / {citation.section || "正文"}
-                        </b>
-                        <br />
-                        {citation.excerpt}
-                      </p>
+                      <div key={index}>
+                        <p><b>{citation.document} / {citation.section || "正文"}</b><br />{citation.excerpt}</p>
+                        {citation.images?.length ? <KnowledgeImages images={citation.images} /> : null}
+                      </div>
                     ))}
                   </details>
                 ) : null}
@@ -1018,7 +1016,7 @@ function KnowledgePage({ setNotice }: { setNotice: (text: string) => void }) {
   const [termsText, setTermsText] = useState("");
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<
-    { display_name: string; section?: string; content: string; score: number; relevance?: number; ranking?: { matched_synonyms?: string[] } }[]
+    { display_name: string; section?: string; content: string; score: number; relevance?: number; ranking?: { matched_synonyms?: string[] }; images?: KnowledgeImage[] }[]
   >([]);
   const [importIssues, setImportIssues] = useState<
     { path: string; display_name: string; reason: string; kind: "跳过" | "失败" }[]
@@ -1034,6 +1032,7 @@ function KnowledgePage({ setNotice }: { setNotice: (text: string) => void }) {
       char_count?: number;
       content: string;
     }[];
+    assets: KnowledgeImage[];
   } | null>(null);
   const load = async () => {
     setDocuments(await api<DocumentRow[]>("/api/admin/documents"));
@@ -1219,6 +1218,7 @@ function KnowledgePage({ setNotice }: { setNotice: (text: string) => void }) {
                 </strong>
                 <small>相关度 {hit.relevance?.toFixed(2) || "-"}{hit.ranking?.matched_synonyms?.length ? ` · ${hit.ranking.matched_synonyms.join("；")}` : ""}</small>
                 <p>{hit.content}</p>
+                {hit.images?.length ? <KnowledgeImages images={hit.images} /> : null}
               </div>
             ))}
           </Panel>
@@ -1233,6 +1233,7 @@ function KnowledgePage({ setNotice }: { setNotice: (text: string) => void }) {
                   {detail.document.warnings.map((warning, index) => <div className="import-issue skipped" key={index}>{warning}</div>)}
                 </div>
               )}
+              {!!detail.assets.length && <div className="knowledge-gallery"><strong>文档图片 · {detail.assets.length}</strong><KnowledgeImages images={detail.assets} /></div>}
               <div className="chunk-preview">
                 {detail.chunks.map((chunk, index) => (
                   <details key={chunk.id}>
@@ -1266,6 +1267,10 @@ function KnowledgePage({ setNotice }: { setNotice: (text: string) => void }) {
       </div>
     </div>
   );
+}
+
+function KnowledgeImages({ images }: { images: KnowledgeImage[] }) {
+  return <div className="knowledge-images">{images.map(image => <figure key={image.id}><img src={image.url} alt={image.alt_text} width={image.width} height={image.height} loading="lazy" decoding="async" referrerPolicy="no-referrer"/><figcaption>{image.location}</figcaption></figure>)}</div>;
 }
 
 function ModelsPage({ setNotice }: { setNotice: (text: string) => void }) {

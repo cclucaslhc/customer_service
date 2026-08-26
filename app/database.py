@@ -128,6 +128,22 @@ def init_database() -> None:
                 metadata_json TEXT NOT NULL DEFAULT '{}',
                 char_count INTEGER NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS knowledge_assets (
+                id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                asset_index INTEGER NOT NULL,
+                stored_name TEXT NOT NULL,
+                media_type TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                width INTEGER NOT NULL,
+                height INTEGER NOT NULL,
+                location TEXT NOT NULL,
+                alt_text TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                UNIQUE(document_id, asset_index)
+            );
             CREATE TABLE IF NOT EXISTS knowledge_jobs (
                 id TEXT PRIMARY KEY,
                 source_path TEXT NOT NULL,
@@ -260,6 +276,7 @@ def init_database() -> None:
             if column not in chunk_columns:
                 db.execute(f"ALTER TABLE knowledge_chunks ADD COLUMN {column} {declaration}")
         db.execute("CREATE INDEX IF NOT EXISTS documents_source_path_idx ON documents(source_path)")
+        db.execute("CREATE INDEX IF NOT EXISTS knowledge_assets_document_idx ON knowledge_assets(document_id,asset_index)")
         db.execute("CREATE INDEX IF NOT EXISTS knowledge_jobs_created_idx ON knowledge_jobs(created_at DESC)")
         db.execute(
             """

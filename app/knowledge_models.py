@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-PARSER_VERSION = "2.1"
+PARSER_VERSION = "2.2"
 CHUNKER_VERSION = "2.0"
 
 
@@ -25,12 +25,26 @@ class ContentBlock:
 
 
 @dataclass(slots=True)
+class EmbeddedAsset:
+    asset_index: int
+    data: bytes
+    media_type: str
+    extension: str
+    location: str
+    alt_text: str
+    width: int
+    height: int
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class ParsedDocument:
     filename: str
     document_type: str
     blocks: list[ContentBlock]
     metadata: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    assets: list[EmbeddedAsset] = field(default_factory=list)
 
     @property
     def has_text(self) -> bool:

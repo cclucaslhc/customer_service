@@ -2,6 +2,7 @@ import hashlib
 import json
 import math
 import re
+import shutil
 import unicodedata
 import uuid
 from pathlib import Path
@@ -14,7 +15,7 @@ from app.knowledge_chunking import chunk_document, chunks_as_dicts
 from app.knowledge_models import CHUNKER_VERSION, PARSER_VERSION, ContentBlock, DocumentParseError, ParsedDocument
 from app.knowledge_parsers import parse_document as parse_structured_document
 from app.knowledge_terms import STOPWORDS, expand_query
-from app.settings import ALLOWED_EXTENSIONS, KNOWLEDGE_DIR, LEGACY_UPLOAD_DIR, MAX_UPLOAD_BYTES, ROOT, SECRETS_DIR
+from app.settings import ALLOWED_EXTENSIONS, KNOWLEDGE_ASSET_DIR, KNOWLEDGE_DIR, LEGACY_UPLOAD_DIR, MAX_UPLOAD_BYTES, ROOT, SECRETS_DIR
 
 
 class KnowledgeError(ValueError):
@@ -95,6 +96,57 @@ def chunk_sections(sections: list[tuple[str, str]], target_chars: int = 900) -> 
 
 
 class KnowledgeService:
+    def _asset_version_dir(self, document_id: str, version: int) -> Path:
+        directory = (KNOWLEDGE_ASSET_DIR / document_id / f"v{version}").resolve()
+        if not is_within(directory, KNOWLEDGE_ASSET_DIR):
+            raise KnowledgeError("图片资产存储路径无效")
+        return directory
+
+    def _store_assets(self, parsed: ParsedDocument, document_id: str, version: int) -> list[dict]:
+        if not parsed.assets:
+            return []
+        directory = self._asset_version_dir(document_id, version)
+        directory.mkdir(parents=True, exist_ok=False)
+        now = utc_now()
+        stored: list[dict] = []
+        try:
+            for asset in parsed.assets:
+                asset_id = str(uuid.uuid4())
+                filename = f"{asset_id}{asset.extension}"
+                path = directory / filename
+                path.write_bytes(asset.data)
+                stored.append({
+                    "id": asset_id,
+                    "document_id": document_id,
+                    "asset_index": asset.asset_index,
+                    "stored_name": str(path.relative_to(KNOWLEDGE_ASSET_DIR)).replace("\\", "/"),
+                    "media_type": asset.media_type,
+                    "size": len(asset.data),
+                    "width": asset.width,
+                    "height": asset.height,
+                    "location": asset.location,
+                    "alt_text": asset.alt_text,
+                    "sha256": hashlib.sha256(asset.data).hexdigest(),
+                    "metadata_json": json.dumps(asset.metadata, ensure_ascii=False),
+                    "created_at": now,
+                })
+        except Exception:
+            shutil.rmtree(directory, ignore_errors=True)
+            raise
+        return stored
+
+    def _cleanup_asset_versions(self, document_id: str, keep_version: int | None = None) -> None:
+        root = (KNOWLEDGE_ASSET_DIR / document_id).resolve()
+        if not is_within(root, KNOWLEDGE_ASSET_DIR) or not root.exists():
+            return
+        for child in root.iterdir():
+            if keep_version is not None and child.name == f"v{keep_version}":
+                continue
+            if child.is_dir() and is_within(child, root):
+                shutil.rmtree(child)
+        if keep_version is None and root.exists() and not any(root.iterdir()):
+            root.rmdir()
+
     def _managed_path(self, filename: str, digest: str, source_path: Path | None = None) -> Path:
         if source_path:
             resolved_source = source_path.resolve()
@@ -139,6 +191,7 @@ class KnowledgeService:
         if existing is not None and existing["sha256"] == digest and not force:
             raise KnowledgeDuplicateError("该文件内容未变化，已跳过")
         doc_id = existing["id"] if existing else str(uuid.uuid4())
+        version = int(existing["version"] or 1) + 1 if existing else 1
         previous_managed_path = (KNOWLEDGE_DIR / existing["stored_name"]).resolve() if existing else None
         try:
             if progress:
@@ -160,11 +213,14 @@ class KnowledgeService:
             source_value = source_value or str(path.resolve())
             source_mtime = source_path.stat().st_mtime if source_path and source_path.exists() else path.stat().st_mtime
             now = utc_now()
+            stored_assets = self._store_assets(parsed, doc_id, version)
+            parsed.metadata["asset_count"] = len(stored_assets)
             if progress:
                 progress({"stage": "indexing", "current_file": display_name})
             with connect() as db:
                 if existing:
                     db.execute("DELETE FROM knowledge_chunks WHERE document_id=?", (doc_id,))
+                    db.execute("DELETE FROM knowledge_assets WHERE document_id=?", (doc_id,))
                     db.execute(
                         """UPDATE documents SET
                                display_name=?,stored_name=?,extension=?,size=?,sha256=?,status='ready',
@@ -174,7 +230,7 @@ class KnowledgeService:
                         (
                             display_name, stored_name, extension, len(data), digest, len(chunks),
                             parsed.document_type, source_value, source_mtime, PARSER_VERSION, CHUNKER_VERSION,
-                            now, int(existing["version"] or 1) + 1,
+                            now, version,
                             json.dumps(parsed.warnings, ensure_ascii=False),
                             json.dumps(parsed.metadata, ensure_ascii=False), doc_id,
                         ),
@@ -189,7 +245,7 @@ class KnowledgeService:
                         (
                             doc_id, display_name, stored_name, extension, len(data), digest, "ready", len(chunks),
                             parsed.document_type, source_value, source_mtime, PARSER_VERSION, CHUNKER_VERSION,
-                            now, 1, json.dumps(parsed.warnings, ensure_ascii=False),
+                            now, version, json.dumps(parsed.warnings, ensure_ascii=False),
                             json.dumps(parsed.metadata, ensure_ascii=False), now,
                         ),
                     )
@@ -205,18 +261,33 @@ class KnowledgeService:
                             json.dumps(chunk["metadata"], ensure_ascii=False), len(chunk["content"]),
                         ),
                     )
+                for asset in stored_assets:
+                    db.execute(
+                        """INSERT INTO knowledge_assets(
+                               id,document_id,asset_index,stored_name,media_type,size,width,height,
+                               location,alt_text,sha256,metadata_json,created_at
+                           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        tuple(asset[key] for key in (
+                            "id", "document_id", "asset_index", "stored_name", "media_type", "size",
+                            "width", "height", "location", "alt_text", "sha256", "metadata_json", "created_at",
+                        )),
+                    )
             if previous_managed_path and previous_managed_path != path.resolve() and is_within(previous_managed_path, KNOWLEDGE_DIR):
                 previous_managed_path.unlink(missing_ok=True)
+            self._cleanup_asset_versions(doc_id, keep_version=version)
         except Exception:
             cleanup_path = locals().get("path")
             if cleanup_path and (source_path is None or cleanup_path.resolve() != source_path.resolve()):
                 if not existing or cleanup_path.resolve() != previous_managed_path:
                     cleanup_path.unlink(missing_ok=True)
+            asset_version_path = self._asset_version_dir(doc_id, version)
+            if asset_version_path.exists():
+                shutil.rmtree(asset_version_path, ignore_errors=True)
             raise
         return {
             "id": doc_id, "display_name": display_name, "status": "ready",
             "chunk_count": len(chunks), "detected_type": parsed.document_type,
-            "version": int(existing["version"] or 1) + 1 if existing else 1,
+            "version": version, "asset_count": len(stored_assets),
             "warnings": parsed.warnings,
         }
 
@@ -307,7 +378,10 @@ class KnowledgeService:
 
     def list_documents(self) -> list[dict]:
         with connect() as db:
-            rows = [dict(row) for row in db.execute("SELECT * FROM documents ORDER BY created_at DESC").fetchall()]
+            rows = [dict(row) for row in db.execute(
+                """SELECT d.*,(SELECT count(*) FROM knowledge_assets a WHERE a.document_id=d.id) asset_count
+                   FROM documents d ORDER BY d.created_at DESC"""
+            ).fetchall()]
         for row in rows:
             row["warnings"] = json.loads(row.pop("warnings_json", "[]") or "[]")
             row["metadata"] = json.loads(row.pop("metadata_json", "{}") or "{}")
@@ -335,11 +409,49 @@ class KnowledgeService:
             raise KnowledgeError("文档存储路径无效") from exc
         with connect() as db:
             db.execute("DELETE FROM documents WHERE id=?", (document_id,))
+        self._cleanup_asset_versions(document_id)
         if managed_path.exists():
             managed_path.unlink()
         else:
             # 兼容改版前保存在 data/uploads 中的哈希命名文档。
             (LEGACY_UPLOAD_DIR / row["stored_name"]).unlink(missing_ok=True)
+
+    @staticmethod
+    def _public_asset(row: dict) -> dict:
+        return {
+            "id": row["id"],
+            "url": f"/api/knowledge/assets/{row['id']}",
+            "media_type": row["media_type"],
+            "width": row["width"],
+            "height": row["height"],
+            "location": row["location"],
+            "alt_text": row["alt_text"],
+        }
+
+    def list_assets(self, document_id: str) -> list[dict]:
+        with connect() as db:
+            rows = db.execute(
+                "SELECT * FROM knowledge_assets WHERE document_id=? ORDER BY asset_index",
+                (document_id,),
+            ).fetchall()
+        return [self._public_asset(dict(row)) for row in rows]
+
+    def asset_file(self, asset_id: str) -> tuple[Path, str]:
+        with connect() as db:
+            row = db.execute(
+                """SELECT a.stored_name,a.media_type FROM knowledge_assets a
+                   JOIN documents d ON d.id=a.document_id
+                   WHERE a.id=? AND d.status='ready'""",
+                (asset_id,),
+            ).fetchone()
+        if not row:
+            raise KnowledgeError("图片资产不存在")
+        path = (KNOWLEDGE_ASSET_DIR / row["stored_name"]).resolve()
+        if not is_within(path, KNOWLEDGE_ASSET_DIR) or not path.is_file():
+            raise KnowledgeError("图片资产不存在")
+        if row["media_type"] != "image/png" or path.suffix.lower() != ".png":
+            raise KnowledgeError("图片资产类型无效")
+        return path, row["media_type"]
 
     def rebuild(self) -> int:
         with connect() as db:
@@ -372,7 +484,7 @@ class KnowledgeService:
         with connect() as db:
             fts_rows = db.execute(
                 """
-                SELECT c.id,c.content,c.section,c.location,c.block_type,d.id document_id,d.display_name,
+                SELECT c.id,c.content,c.section,c.location,c.block_type,c.metadata_json,d.id document_id,d.display_name,
                        bm25(knowledge_fts) score
                 FROM knowledge_fts
                 JOIN knowledge_chunks c ON c.id=knowledge_fts.rowid
@@ -383,7 +495,7 @@ class KnowledgeService:
                 (match_query, candidate_limit),
             ).fetchall()
             semantic_rows = db.execute(
-                """SELECT c.id,c.content,c.section,c.location,c.block_type,d.id document_id,d.display_name
+                """SELECT c.id,c.content,c.section,c.location,c.block_type,c.metadata_json,d.id document_id,d.display_name
                    FROM knowledge_chunks c JOIN documents d ON d.id=c.document_id
                    WHERE d.status='ready' ORDER BY c.id DESC LIMIT 5000"""
             ).fetchall()
@@ -424,4 +536,44 @@ class KnowledgeService:
             }
             ranked.append(item)
         ranked.sort(key=lambda item: (-item["relevance"], item["score"]))
-        return [item for item in ranked if item["relevance"] >= 0.12][:limit]
+        results = [item for item in ranked if item["relevance"] >= 0.12][:limit]
+        if not results:
+            return []
+        document_ids = list(dict.fromkeys(item["document_id"] for item in results))
+        placeholders = ",".join("?" for _ in document_ids)
+        with connect() as db:
+            asset_rows = [dict(row) for row in db.execute(
+                f"SELECT * FROM knowledge_assets WHERE document_id IN ({placeholders}) ORDER BY asset_index",
+                document_ids,
+            ).fetchall()]
+        assets_by_document: dict[str, list[dict]] = {}
+        for asset in asset_rows:
+            try:
+                asset["metadata"] = json.loads(asset.pop("metadata_json", "{}") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                asset["metadata"] = {}
+            assets_by_document.setdefault(asset["document_id"], []).append(asset)
+        for item in results:
+            try:
+                metadata = json.loads(item.pop("metadata_json", "{}") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            def metadata_values(value: dict, key: str) -> set:
+                values = {value[key]} if key in value and value[key] is not None else set()
+                for source_block in value.get("source_blocks", []):
+                    if isinstance(source_block, dict) and source_block.get(key) is not None:
+                        values.add(source_block[key])
+                return values
+            asset_indexes = metadata_values(metadata, "asset_index")
+            pages = metadata_values(metadata, "page")
+            slides = metadata_values(metadata, "slide")
+            matches: list[dict] = []
+            for asset in assets_by_document.get(item["document_id"], []):
+                asset_metadata = asset["metadata"]
+                exact = asset["asset_index"] in asset_indexes
+                same_page = asset_metadata.get("page") is not None and asset_metadata.get("page") in pages
+                same_slide = asset_metadata.get("slide") is not None and asset_metadata.get("slide") in slides
+                if exact or same_page or same_slide:
+                    matches.append(self._public_asset(asset))
+            item["images"] = matches[:3]
+        return results

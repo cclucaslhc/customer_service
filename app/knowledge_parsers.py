@@ -21,12 +21,12 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 from openpyxl import load_workbook
 from openpyxl.xml.functions import tostring as openpyxl_tostring
-from PIL import Image
+from PIL import Image, ImageOps
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from rapidocr_onnxruntime import RapidOCR
 
-from app.knowledge_models import ContentBlock, DocumentParseError, PARSER_VERSION, ParsedDocument
+from app.knowledge_models import ContentBlock, DocumentParseError, EmbeddedAsset, PARSER_VERSION, ParsedDocument
 
 
 MODERN_EXTENSIONS = {".pdf", ".docx", ".xls", ".xlsx", ".csv", ".tsv", ".pptx", ".md", ".txt", ".html", ".htm"}
@@ -51,6 +51,8 @@ MAX_SLIDES = 2_000
 MAX_PDF_PAGES = 5_000
 MAX_IMAGE_PIXELS = 40_000_000
 MAX_OCR_IMAGES_PER_DOCUMENT = 100
+MAX_EMBEDDED_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_EMBEDDED_IMAGE_DIMENSION = 4096
 
 
 _ocr_lock = threading.Lock()
@@ -87,6 +89,48 @@ def _ocr_image(image: Image.Image) -> tuple[str, float | None]:
             except (TypeError, ValueError):
                 pass
     return "\n".join(lines), (sum(scores) / len(scores) if scores else None)
+
+
+def _normalize_embedded_image(
+    data: bytes,
+    asset_index: int,
+    location: str,
+    alt_text: str,
+    metadata: dict | None = None,
+) -> EmbeddedAsset:
+    if not data or len(data) > MAX_EMBEDDED_IMAGE_BYTES:
+        raise DocumentParseError(f"图片大小必须在 1 字节到 {MAX_EMBEDDED_IMAGE_BYTES // (1024 * 1024)} MB 之间")
+    try:
+        with Image.open(io.BytesIO(data)) as source:
+            width, height = source.size
+            if width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS:
+                raise DocumentParseError(f"图片超过 OCR 像素上限 {MAX_IMAGE_PIXELS}")
+            source.seek(0)
+            image = ImageOps.exif_transpose(source).copy()
+    except DocumentParseError:
+        raise
+    except Exception as exc:
+        raise DocumentParseError(f"图片格式无效：{exc}") from exc
+    if max(image.size) > MAX_EMBEDDED_IMAGE_DIMENSION:
+        image.thumbnail((MAX_EMBEDDED_IMAGE_DIMENSION, MAX_EMBEDDED_IMAGE_DIMENSION), Image.Resampling.LANCZOS)
+    has_alpha = image.mode in {"RGBA", "LA"} or "transparency" in image.info
+    image = image.convert("RGBA" if has_alpha else "RGB")
+    output = io.BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    normalized = output.getvalue()
+    if len(normalized) > MAX_EMBEDDED_IMAGE_BYTES:
+        raise DocumentParseError("图片安全转换后的文件仍然过大")
+    return EmbeddedAsset(
+        asset_index=asset_index,
+        data=normalized,
+        media_type="image/png",
+        extension=".png",
+        location=location,
+        alt_text=alt_text,
+        width=image.width,
+        height=image.height,
+        metadata=metadata or {},
+    )
 
 
 def _decode_text(data: bytes) -> tuple[str, str]:
@@ -208,6 +252,7 @@ def _parse_docx(filename: str, data: bytes) -> ParsedDocument:
     except Exception as exc:
         raise DocumentParseError(f"Word 文档解析失败：{exc}") from exc
     blocks: list[ContentBlock] = []
+    assets: list[EmbeddedAsset] = []
     warnings: list[str] = []
     heading_path: list[str] = []
     paragraph_index = 0
@@ -251,12 +296,14 @@ def _parse_docx(filename: str, data: bytes) -> ParsedDocument:
                 warnings.append(f"嵌入图片超过 {MAX_OCR_IMAGES_PER_DOCUMENT} 张，后续图片已跳过 OCR")
             continue
         try:
-            image = Image.open(io.BytesIO(target.blob))
-            text, confidence = _ocr_image(image)
+            location = f"嵌入图片 {image_index}"
+            asset = _normalize_embedded_image(target.blob, image_index, location, f"{Path(filename).stem}嵌入图片 {image_index}", {"image_index": image_index})
+            assets.append(asset)
+            text, confidence = _ocr_image(Image.open(io.BytesIO(asset.data)))
             if text:
-                blocks.append(ContentBlock("image_ocr", text, "嵌入图片", f"嵌入图片 {image_index}", {"image_index": image_index, "ocr_confidence": confidence}))
+                blocks.append(ContentBlock("image_ocr", text, "嵌入图片", location, {"asset_index": image_index, "image_index": image_index, "ocr_confidence": confidence}))
         except Exception as exc:
-            warnings.append(f"嵌入图片 {image_index} OCR 失败：{exc}")
+            warnings.append(f"嵌入图片 {image_index} 提取或 OCR 失败：{exc}")
     header_footer_seen: set[str] = set()
     for section_number, section in enumerate(document.sections, 1):
         for kind, container in (("页眉", section.header), ("页脚", section.footer)):
@@ -292,7 +339,7 @@ def _parse_docx(filename: str, data: bytes) -> ParsedDocument:
                         blocks.append(ContentBlock("footnote", value, "脚注", "脚注", {}))
     except (zipfile.BadZipFile, ElementTree.ParseError):
         warnings.append("脚注结构损坏，已跳过")
-    return ParsedDocument(filename, ".docx", blocks, {"paragraphs": paragraph_index, "tables": table_index, "images": image_index, "charts": chart_index, "parser_version": PARSER_VERSION}, warnings)
+    return ParsedDocument(filename, ".docx", blocks, {"paragraphs": paragraph_index, "tables": table_index, "images": image_index, "charts": chart_index, "parser_version": PARSER_VERSION}, warnings, assets)
 
 
 def _spreadsheet_blocks(filename: str, sheets: Iterable[tuple[str, Iterable[list[object]]]]) -> ParsedDocument:
@@ -423,6 +470,7 @@ def _parse_pptx(filename: str, data: bytes) -> ParsedDocument:
     if len(presentation.slides) > MAX_SLIDES:
         raise DocumentParseError(f"PowerPoint 超过 {MAX_SLIDES} 张幻灯片")
     blocks: list[ContentBlock] = []
+    assets: list[EmbeddedAsset] = []
     warnings: list[str] = []
     total_images = 0
 
@@ -478,18 +526,21 @@ def _parse_pptx(filename: str, data: bytes) -> ParsedDocument:
                         warnings.append(f"演示文稿图片超过 {MAX_OCR_IMAGES_PER_DOCUMENT} 张，后续图片已跳过 OCR")
                     continue
                 try:
-                    text, confidence = _ocr_image(Image.open(io.BytesIO(shape.image.blob)))
+                    location = f"第 {slide_number} 张 / 图片 {image_number}"
+                    asset = _normalize_embedded_image(shape.image.blob, total_images, location, f"{title}图片 {image_number}", {"slide": slide_number, "image_index": image_number})
+                    assets.append(asset)
+                    text, confidence = _ocr_image(Image.open(io.BytesIO(asset.data)))
                     if text:
-                        blocks.append(ContentBlock("image_ocr", text, title, f"第 {slide_number} 张 / 图片 {image_number}", {"slide": slide_number, "image_index": image_number, "ocr_confidence": confidence}))
+                        blocks.append(ContentBlock("image_ocr", text, title, location, {"asset_index": total_images, "slide": slide_number, "image_index": image_number, "ocr_confidence": confidence}))
                 except Exception as exc:
-                    warnings.append(f"第 {slide_number} 张图片 {image_number} OCR 失败：{exc}")
+                    warnings.append(f"第 {slide_number} 张图片 {image_number} 提取或 OCR 失败：{exc}")
         try:
             notes = slide.notes_slide.notes_text_frame.text.strip()
         except Exception:
             notes = ""
         if notes:
             blocks.append(ContentBlock("note", notes, title, f"第 {slide_number} 张 / 演讲者备注", {"slide": slide_number}))
-    return ParsedDocument(filename, ".pptx", blocks, {"slides": len(presentation.slides), "parser_version": PARSER_VERSION}, warnings)
+    return ParsedDocument(filename, ".pptx", blocks, {"slides": len(presentation.slides), "images": len(assets), "parser_version": PARSER_VERSION}, warnings, assets)
 
 
 def _parse_pdf(filename: str, data: bytes) -> ParsedDocument:
@@ -498,13 +549,42 @@ def _parse_pdf(filename: str, data: bytes) -> ParsedDocument:
     except Exception as exc:
         raise DocumentParseError(f"PDF 解析失败：{exc}") from exc
     blocks: list[ContentBlock] = []
+    assets: list[EmbeddedAsset] = []
     warnings: list[str] = []
+    seen_image_xrefs: set[int] = set()
     try:
         if document.needs_pass:
             raise DocumentParseError("PDF 已加密，请解密后再导入")
         if document.page_count > MAX_PDF_PAGES:
             raise DocumentParseError(f"PDF 超过 {MAX_PDF_PAGES} 页")
         for page_number, page in enumerate(document, 1):
+            for page_image_index, image_info in enumerate(page.get_images(full=True), 1):
+                xref = int(image_info[0])
+                if not xref or xref in seen_image_xrefs:
+                    continue
+                seen_image_xrefs.add(xref)
+                asset_index = len(assets) + 1
+                if asset_index > MAX_OCR_IMAGES_PER_DOCUMENT:
+                    if asset_index == MAX_OCR_IMAGES_PER_DOCUMENT + 1:
+                        warnings.append(f"PDF 图片超过 {MAX_OCR_IMAGES_PER_DOCUMENT} 张，后续图片已跳过提取")
+                    break
+                try:
+                    extracted_image = document.extract_image(xref)
+                    location = f"第 {page_number} 页 / 图片 {page_image_index}"
+                    asset = _normalize_embedded_image(
+                        extracted_image["image"], asset_index, location,
+                        f"{Path(filename).stem}第 {page_number} 页图片 {page_image_index}",
+                        {"page": page_number, "image_index": page_image_index, "xref": xref},
+                    )
+                    # 忽略常见的装饰线、图标和蒙版，避免低价值资产污染引用。
+                    if asset.width < 32 or asset.height < 32:
+                        continue
+                    assets.append(asset)
+                    text, confidence = _ocr_image(Image.open(io.BytesIO(asset.data)))
+                    if text:
+                        blocks.append(ContentBlock("image_ocr", text, f"第 {page_number} 页", location, {"asset_index": asset_index, "page": page_number, "image_index": page_image_index, "ocr_confidence": confidence}))
+                except Exception as exc:
+                    warnings.append(f"第 {page_number} 页图片 {page_image_index} 提取或 OCR 失败：{exc}")
             table_bboxes: list[tuple[float, float, float, float]] = []
             try:
                 found_tables = page.find_tables().tables
@@ -549,19 +629,18 @@ def _parse_pdf(filename: str, data: bytes) -> ParsedDocument:
     finally:
         page_count = document.page_count
         document.close()
-    return ParsedDocument(filename, ".pdf", blocks, {"pages": page_count, "parser_version": PARSER_VERSION}, warnings)
+    return ParsedDocument(filename, ".pdf", blocks, {"pages": page_count, "images": len(assets), "parser_version": PARSER_VERSION}, warnings, assets)
 
 
 def _parse_image(filename: str, data: bytes, detected_type: str) -> ParsedDocument:
     try:
-        image = Image.open(io.BytesIO(data))
-        width, height = image.size
-        text, confidence = _ocr_image(image)
+        asset = _normalize_embedded_image(data, 1, "原始图片", Path(filename).stem or "知识库图片", {"source_image": True})
+        text, confidence = _ocr_image(Image.open(io.BytesIO(asset.data)))
     except Exception as exc:
         raise DocumentParseError(f"图片 OCR 失败：{exc}") from exc
-    blocks = [ContentBlock("ocr", text, "图片文字", "图片 OCR", {"ocr_confidence": confidence})] if text else []
+    blocks = [ContentBlock("ocr", text, "图片文字", "图片 OCR", {"asset_index": 1, "ocr_confidence": confidence})] if text else []
     warnings = [] if text else ["图片没有识别到文字"]
-    return ParsedDocument(filename, detected_type, blocks, {"width": width, "height": height, "parser_version": PARSER_VERSION}, warnings)
+    return ParsedDocument(filename, detected_type, blocks, {"width": asset.width, "height": asset.height, "images": 1, "parser_version": PARSER_VERSION}, warnings, [asset])
 
 
 def _parse_markdown(filename: str, data: bytes) -> ParsedDocument:

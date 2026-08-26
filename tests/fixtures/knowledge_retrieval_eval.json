@@ -1,32 +1,103 @@
 {
+  "dataset": "synthetic_enterprise_support_challenge_v2",
   "documents": [
-    {
-      "filename": "YC32M103_数据手册.txt",
-      "content": "YC32M103 是面向汽车电子的 32 位 MCU，最高主频 120MHz，支持 CAN FD、UART 和 SPI。"
-    },
-    {
-      "filename": "YCP6213A_电源规格.txt",
-      "content": "YCP6213A 是同步降压电源管理芯片，输入电压范围 4.5V 至 24V，持续输出电流 3A。"
-    },
-    {
-      "filename": "RMA_售后流程.txt",
-      "content": "退货授权 RMA 必须提供订单号、批次、失效数量和现象描述，质量部门完成失效分析后给出处置意见。"
-    },
-    {
-      "filename": "PCN_变更流程.txt",
-      "content": "产品变更通知 PCN 覆盖晶圆厂、封装材料、测试程序和生产地点的重要变化，并按客户协议提前通知。"
-    },
-    {
-      "filename": "MSL_存储规范.txt",
-      "content": "湿敏等级 MSL3 器件开封后应控制车间寿命，超时后按规定温度烘烤，避免回流焊爆米花失效。"
-    }
+    {"filename": "YC32M103_数据手册.txt", "content": "YC32M103 是面向汽车电子的 32 位 MCU，最高主频 120MHz，支持 CAN FD、UART 和 SPI，片上 Flash 容量 256KB，工作温度范围为 -40℃ 至 125℃。"},
+    {"filename": "YC32M105_数据手册.txt", "content": "YC32M105 是高性能车规 MCU，最高主频 160MHz，支持两路 CAN FD、LIN、UART 和 SPI，片上 Flash 容量 512KB，适合车身域控制。"},
+    {"filename": "YC32F103_工业控制手册.txt", "content": "YC32F103 面向工业控制，最高主频 72MHz，提供经典 CAN、UART、I2C 和 SPI 接口，不支持 CAN FD，工作温度范围为 -40℃ 至 85℃。"},
+    {"filename": "CAN_FD_应用笔记.txt", "content": "CAN FD 网络布线建议总线两端各使用 120 欧姆终端电阻。仲裁段推荐 500kbps，数据段可配置为 2Mbps，分支线应尽量缩短。"},
+    {"filename": "YCP6213A_电源规格.txt", "content": "YCP6213A 是同步降压电源管理芯片，输入电压范围 4.5V 至 24V，持续输出电流 3A，固定开关频率 500kHz，支持过流和过温保护。"},
+    {"filename": "YCP6213B_电源规格.txt", "content": "YCP6213B 是宽输入同步降压芯片，输入电压范围 4.5V 至 36V，持续输出电流 2A，开关频率可在 300kHz 至 1MHz 之间调节。"},
+    {"filename": "YCP6213A_布局指南.txt", "content": "YCP6213A 布局时应缩短输入电容到 VIN 与 GND 的高频回路，功率电感建议从 6.8uH 至 10uH 之间选择，反馈走线需要远离 SW 节点。"},
+    {"filename": "RMA_售后流程.txt", "content": "退货授权 RMA 必须提供订单号、产品批次、失效数量和现象描述。质量部门收到完整资料后进行失效分析，并在十个工作日内给出处置意见。"},
+    {"filename": "DOA_到货异常流程.txt", "content": "到货即损 DOA 适用于签收后七天内发现的外观破损、数量短缺或无法上电。客户需要提交签收单、外箱照片和异常产品照片，由客服先核对物流记录。"},
+    {"filename": "产品质保政策.txt", "content": "标准产品自发货之日起提供两年有限质保。超过质保期仍可申请付费检测；质保申请需先取得 RMA 编号，但取得编号不代表最终判定属于免费维修。"},
+    {"filename": "PCN_变更流程.txt", "content": "产品变更通知 PCN 覆盖晶圆厂、封装材料、测试程序和生产地点的重要变化。除紧急情况外，公司按客户协议至少提前九十天发送通知。"},
+    {"filename": "PDN_停产流程.txt", "content": "产品停产通知 PDN 应说明停产原因、替代型号、最后订购日期和最后交付日期。原则上至少提前六个月通知，最后订单一经确认不得取消。"},
+    {"filename": "MSL3_存储规范.txt", "content": "湿敏等级 MSL3 器件在不高于 30℃、60%RH 的车间环境中，开封后寿命为 168 小时。超时后可按 125℃ 烘烤 24 小时，再重新计算车间寿命。"},
+    {"filename": "MSL5_存储规范.txt", "content": "湿敏等级 MSL5 器件在不高于 30℃、60%RH 的车间环境中，开封后寿命为 48 小时。超时器件必须依据包装标签规定的条件烘烤。"},
+    {"filename": "防潮包装与仓储规范.txt", "content": "未开封防潮袋应存放在温度低于 40℃、相对湿度低于 90% 的环境。拆封后的余料建议放入湿度低于 10%RH 的干燥柜，并记录开封时间。"}
   ],
   "queries": [
     {"query": "汽车级单片机支持什么总线", "expected": "YC32M103_数据手册.txt"},
+    {"query": "车规 MCU 的最高主频是多少", "expected": "YC32M103_数据手册.txt"},
+    {"query": "哪一款汽车电子芯片支持 CAN FD", "expected": "YC32M103_数据手册.txt"},
     {"query": "YCP6213A 输入电压和输出电流", "expected": "YCP6213A_电源规格.txt"},
+    {"query": "支持 24V 输入的同步降压芯片", "expected": "YCP6213A_电源规格.txt"},
+    {"query": "持续输出 3A 的电源管理芯片", "expected": "YCP6213A_电源规格.txt"},
     {"query": "退换货需要哪些失效资料", "expected": "RMA_售后流程.txt"},
+    {"query": "申请 RMA 要提供订单号和哪些信息", "expected": "RMA_售后流程.txt"},
+    {"query": "质量部门在什么资料齐全后做失效分析", "expected": "RMA_售后流程.txt"},
     {"query": "封装材料变化需要什么通知", "expected": "PCN_变更流程.txt"},
-    {"query": "湿敏器件开封超时如何处理", "expected": "MSL_存储规范.txt"}
+    {"query": "晶圆厂或生产地点变化怎么通知客户", "expected": "PCN_变更流程.txt"},
+    {"query": "测试程序发生重要变更应走什么流程", "expected": "PCN_变更流程.txt"},
+    {"query": "湿敏器件开封超时如何处理", "expected": "MSL3_存储规范.txt"},
+    {"query": "MSL3 器件如何控制车间寿命", "expected": "MSL3_存储规范.txt"},
+    {"query": "怎样避免回流焊爆米花失效", "expected": "MSL3_存储规范.txt"}
   ],
-  "negative_queries": ["员工食堂今天供应什么菜", "公司班车几点发车"]
+  "challenge_queries": [
+    {"category": "similar_document", "query": "主频 160M 而且有两路 CANFD 的是哪颗", "expected": "YC32M105_数据手册.txt"},
+    {"category": "similar_document", "query": "72MHz 的工控芯片到底支不支持 CAN FD", "expected": "YC32F103_工业控制手册.txt"},
+    {"category": "similar_document", "query": "256K flash 的车规料工作温度到多少", "expected": "YC32M103_数据手册.txt"},
+    {"category": "similar_document", "query": "车身域控制想用 512KB 闪存的型号", "expected": "YC32M105_数据手册.txt"},
+    {"category": "similar_document", "query": "CAN FD 总线末端电阻和数据段速率", "expected": "CAN_FD_应用笔记.txt"},
+    {"category": "similar_document", "query": "我要找 36V 输入的那颗，不是 24V 的", "expected": "YCP6213B_电源规格.txt"},
+    {"category": "similar_document", "query": "6213A 的 SW 附近反馈线该怎么走", "expected": "YCP6213A_布局指南.txt"},
+    {"category": "similar_document", "query": "到货箱子破了需要拍哪些照片", "expected": "DOA_到货异常流程.txt"},
+    {"category": "similar_document", "query": "停产料的最后下单时间看哪个通知", "expected": "PDN_停产流程.txt"},
+    {"category": "similar_document", "query": "MSL5 拆包能在车间放两天吗", "expected": "MSL5_存储规范.txt"},
+    {"category": "typo", "query": "YC32M103最高主频和flahs容量", "expected": "YC32M103_数据手册.txt"},
+    {"category": "typo", "query": "6213B的输如电压最高多少", "expected": "YCP6213B_电源规格.txt"},
+    {"category": "typo", "query": "RMA要提共失效数亮吗", "expected": "RMA_售后流程.txt"},
+    {"category": "typo", "query": "封妆材料改了要发PCN还是PDN", "expected": "PCN_变更流程.txt"},
+    {"category": "typo", "query": "MSL3开峰168小时后怎么哄烤", "expected": "MSL3_存储规范.txt"},
+    {"category": "typo", "query": "CANFD终段电组用多大", "expected": "CAN_FD_应用笔记.txt"},
+    {"category": "typo", "query": "到货就怀了找哪个流成", "expected": "DOA_到货异常流程.txt"},
+    {"category": "typo", "query": "停厂通知最少提早几个约", "expected": "PDN_停产流程.txt"},
+    {"category": "colloquial", "query": "这颗小芯片在发动机舱那么热的地方能扛住不", "expected": "YC32M103_数据手册.txt"},
+    {"category": "colloquial", "query": "板子老重启，6213A 输入那圈线是不是得短点", "expected": "YCP6213A_布局指南.txt"},
+    {"category": "colloquial", "query": "货一拆就发现少了几个，我先发啥证明", "expected": "DOA_到货异常流程.txt"},
+    {"category": "colloquial", "query": "东西坏了要退回去，售后让我准备啥", "expected": "RMA_售后流程.txt"},
+    {"category": "colloquial", "query": "这个料以后不卖了的话一般提前多久说", "expected": "PDN_停产流程.txt"},
+    {"category": "colloquial", "query": "三级湿敏料周一拆的，放一周还能贴吗", "expected": "MSL3_存储规范.txt"},
+    {"category": "colloquial", "query": "没拆袋的料仓库里潮一点有关系吗", "expected": "防潮包装与仓储规范.txt"},
+    {"category": "colloquial", "query": "过保了还能不能花钱帮我看看", "expected": "产品质保政策.txt"},
+    {"category": "paraphrase", "query": "哪份资料规定了产品变更的客户告知提前期", "expected": "PCN_变更流程.txt"},
+    {"category": "paraphrase", "query": "器件生命周期终止时供应商需要给出哪些关键日期", "expected": "PDN_停产流程.txt"},
+    {"category": "paraphrase", "query": "申请免费维修是不是拿到退货编号就一定通过", "expected": "产品质保政策.txt"},
+    {"category": "paraphrase", "query": "电源芯片的高频电流环路应如何减小", "expected": "YCP6213A_布局指南.txt"},
+    {"category": "paraphrase", "query": "哪个降压方案既能承受 24V 又能连续带 3A", "expected": "YCP6213A_电源规格.txt"},
+    {"category": "paraphrase", "query": "失效分析完成后的处理意见多久可以拿到", "expected": "RMA_售后流程.txt"},
+    {"category": "paraphrase", "query": "开封余料放置环境有什么湿度要求", "expected": "防潮包装与仓储规范.txt"},
+    {"category": "paraphrase", "query": "如何降低高速 CAN 网络分支造成的信号问题", "expected": "CAN_FD_应用笔记.txt"},
+    {"category": "weak_signal", "query": "A 和 B 两个版本哪个能调开关频率", "expected": "YCP6213B_电源规格.txt"},
+    {"category": "weak_signal", "query": "不是车规的那颗温度上限是多少", "expected": "YC32F103_工业控制手册.txt"},
+    {"category": "weak_signal", "query": "七天内发现的问题走哪个特殊流程", "expected": "DOA_到货异常流程.txt"},
+    {"category": "weak_signal", "query": "九十天和六个月分别对应哪类告知，我问九十天那个", "expected": "PCN_变更流程.txt"},
+    {"category": "weak_signal", "query": "两天就到期的是哪一级湿敏料", "expected": "MSL5_存储规范.txt"},
+    {"category": "weak_signal", "query": "要做十个工作日的是哪种售后处理", "expected": "RMA_售后流程.txt"}
+  ],
+  "negative_queries": [
+    "员工食堂今天供应什么菜",
+    "公司班车几点发车",
+    "今年的年假还有多少天",
+    "办公室无线网络密码是什么",
+    "销售团队本季度奖金如何计算"
+  ],
+  "hard_negative_queries": [
+    {"category": "missing_fact", "query": "YC32M103 是否通过 AEC-Q100 Grade 1 认证"},
+    {"category": "missing_fact", "query": "YC32M105 的待机功耗是多少微安"},
+    {"category": "missing_fact", "query": "CAN FD 应用笔记推荐使用哪个收发器型号"},
+    {"category": "missing_fact", "query": "YCP6213A 在 12V 转 5V 时效率是多少"},
+    {"category": "missing_fact", "query": "YCP6213B 的封装尺寸是多少"},
+    {"category": "missing_fact", "query": "RMA 退回产品应该寄到哪个具体地址"},
+    {"category": "missing_fact", "query": "DOA 换货产生的运费由谁承担"},
+    {"category": "missing_fact", "query": "两年质保是否覆盖人为进水"},
+    {"category": "missing_fact", "query": "紧急 PCN 最少可以提前几天通知"},
+    {"category": "missing_fact", "query": "PDN 最后订单是否支持分批交付"},
+    {"category": "missing_fact", "query": "MSL3 在 40%RH 环境下能延长到多少小时"},
+    {"category": "missing_fact", "query": "MSL5 推荐的统一烘烤温度是多少"},
+    {"category": "cross_document_reasoning", "query": "YC32M105 搭配 YCP6213B 的整机 BOM 成本是多少"},
+    {"category": "cross_document_reasoning", "query": "从停产通知到完成 RMA 的总天数是多少"},
+    {"category": "cross_document_reasoning", "query": "哪款 MCU 使用 YCP6213A 供电时整机效率最高"}
+  ]
 }

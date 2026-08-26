@@ -30,7 +30,7 @@ def search_knowledge(ctx: RunContext[AgentDeps], query: str) -> str:
     ctx.deps.knowledge_searched = True
     results = ctx.deps.knowledge.search(query)
     ctx.deps.citations = [
-        {"document_id": item["document_id"], "document": item["display_name"], "section": item["section"], "location": item["location"], "excerpt": item["content"][:260]}
+        {"document_id": item["document_id"], "document": item["display_name"], "section": item["section"], "location": item["location"], "excerpt": item["content"][:260], "images": item.get("images", [])}
         for item in results[:4]
     ]
     if not results:

@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
 import { ApiError, api, streamChat } from './api'
 import { adminSessionListPath, messageFeedbackPath, quoteMessageContent, sessionIdFromSearch, sessionListPath, sessionUrl } from './session'
 import AdminConsole from './AdminConsole'
+import MarkdownContent from './MarkdownContent'
 
-type Citation = { document: string; section?: string; excerpt: string }
+type KnowledgeImage = { id: string; url: string; alt_text: string; location: string; width: number; height: number; media_type: string }
+type Citation = { document: string; section?: string; excerpt: string; images?: KnowledgeImage[] }
 type Message = { id?: string; role: 'user' | 'assistant'; content: string; citations?: Citation[]; feedback?: 'up' | 'down' | null; status?: string; created_at?: string }
 type SessionSummary = { id: string; title: string; status: string; message_count: number; last_message?: string; archived_at?: string; deleted_at?: string; created_at: string; updated_at: string }
 type SessionDetail = { session: SessionSummary; messages: Message[] }
@@ -207,7 +208,7 @@ export default function App() {
           <div className="conversation">
             {loadingSession && <div className="history-loading">正在加载历史会话…</div>}
             {!loadingSession && messages.length === 0 && <div className="welcome"><span className="eyebrow">CUSTOMER INTELLIGENCE</span><h2>您好，我是云小智</h2><p>我可以回答公司知识、查询模拟订单和物流，并在需要时登记您的联系方式。</p><div className="starter-grid">{starterQuestions.map(q => <button key={q} onClick={() => void send(q)}>{q}<b>↗</b></button>)}</div></div>}
-            {messages.map((message, index) => <div className={`message ${message.role}`} key={message.id || index}><div className="avatar">{message.role === 'user' ? '您' : '云'}</div><div className="bubble"><ReactMarkdown>{message.content || '思考中…'}</ReactMarkdown>{message.citations?.length ? <div className="citations"><strong>参考资料</strong>{message.citations.map((c, i) => <details key={i}><summary>{c.document} · {c.section || '正文'}</summary><p>{c.excerpt}</p></details>)}</div> : null}{message.content && <div className="message-actions"><button title="复制消息" aria-label="复制消息" onClick={() => void copyMessage(message)}>复制</button><button title="引用消息" aria-label="引用消息" onClick={() => quoteMessage(message)}>引用</button>{message.role === 'assistant' && message.id && message.status !== 'error' && <><button className={message.feedback === 'up' ? 'selected' : ''} title="回答有帮助" aria-label="回答有帮助" aria-pressed={message.feedback === 'up'} onClick={() => void rateMessage(message, 'up')}>👍</button><button className={message.feedback === 'down' ? 'selected' : ''} title="回答需改进" aria-label="回答需改进" aria-pressed={message.feedback === 'down'} onClick={() => void rateMessage(message, 'down')}>👎</button></>}</div>}</div></div>)}
+            {messages.map((message, index) => <div className={`message ${message.role}`} key={message.id || index}><div className="avatar">{message.role === 'user' ? '您' : '云'}</div><div className="bubble"><MarkdownContent>{message.content || '思考中…'}</MarkdownContent>{message.citations?.length ? <div className="citations"><strong>参考资料</strong>{message.citations.map((c, i) => <details key={i}><summary>{c.document} · {c.section || '正文'}</summary><p>{c.excerpt}</p>{c.images?.length ? <KnowledgeImages images={c.images} /> : null}</details>)}</div> : null}{message.content && <div className="message-actions"><button title="复制消息" aria-label="复制消息" onClick={() => void copyMessage(message)}>复制</button><button title="引用消息" aria-label="引用消息" onClick={() => quoteMessage(message)}>引用</button>{message.role === 'assistant' && message.id && message.status !== 'error' && <><button className={message.feedback === 'up' ? 'selected' : ''} title="回答有帮助" aria-label="回答有帮助" aria-pressed={message.feedback === 'up'} onClick={() => void rateMessage(message, 'up')}>👍</button><button className={message.feedback === 'down' ? 'selected' : ''} title="回答需改进" aria-label="回答需改进" aria-pressed={message.feedback === 'down'} onClick={() => void rateMessage(message, 'down')}>👎</button></>}</div>}</div></div>)}
           </div>
           <div className="composer">{quotedMessage && <div className="quote-preview"><div><strong>引用{quotedMessage.role === 'user' ? '我的消息' : ' AI 客服回答'}</strong><span>{quotedMessage.content.replace(/\s+/g, ' ').slice(0, 180)}{quotedMessage.content.replace(/\s+/g, ' ').length > 180 ? '…' : ''}</span></div><button aria-label="取消引用" title="取消引用" onClick={() => setQuotedMessage(null)}>×</button></div>}<div className="status-line"><i className={running ? 'pulse' : ''}/>{status}</div><div className="input-row"><textarea ref={composerRef} value={input} disabled={loadingSession} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }} placeholder="请输入您的问题，Enter 发送…" />{running ? <button className="stop" onClick={stop}>停止</button> : <button className="send" disabled={loadingSession} onClick={() => void send()}>发送</button>}</div></div>
         </div>
@@ -216,6 +217,10 @@ export default function App() {
       </section> : <AdminConsole />}
     </main>
   </div>
+}
+
+function KnowledgeImages({ images }: { images: KnowledgeImage[] }) {
+  return <div className="knowledge-images">{images.map(image => <figure key={image.id}><img src={image.url} alt={image.alt_text} width={image.width} height={image.height} loading="lazy" decoding="async" referrerPolicy="no-referrer"/><figcaption>{image.location}</figcaption></figure>)}</div>
 }
 
 function ContactForm({ sessionId, summary, onClose }: { sessionId: string; summary: string; onClose: () => void }) {

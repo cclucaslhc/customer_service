@@ -1,0 +1,54 @@
+{
+  "cases": [
+    {
+      "name": "knowledge_search",
+      "prompt": "介绍一下公司的主要产品",
+      "tool": "search_knowledge",
+      "arguments": {"query": "公司主要产品"},
+      "answer": "公司主要提供云小智客服平台和企业知识库服务。",
+      "expects_citation": true
+    },
+    {
+      "name": "business_time",
+      "prompt": "现在是否在营业时间？",
+      "tool": "get_business_time",
+      "arguments": {},
+      "answer": "当前营业时间为每天 09:00 至 18:00。"
+    },
+    {
+      "name": "order_lookup",
+      "prompt": "查询订单 A10001，手机号后四位 1234",
+      "tool": "lookup_order",
+      "arguments": {"order_id": "A10001", "phone_suffix": "1234"},
+      "answer": "订单 A10001 已发货。"
+    },
+    {
+      "name": "shipping_lookup",
+      "prompt": "订单 A10001 到哪里了？",
+      "tool": "lookup_shipping",
+      "arguments": {"order_id": "A10001"},
+      "answer": "订单正在上海转运中心运输中。"
+    },
+    {
+      "name": "refund_check",
+      "prompt": "订单 A10002 是否可以申请退款？",
+      "tool": "check_refund_eligibility",
+      "arguments": {"order_id": "A10002"},
+      "answer": "该订单可以申请售后，最终以人工审核为准。"
+    },
+    {
+      "name": "human_handoff",
+      "prompt": "我要联系人工客服",
+      "tool": "show_contact_form",
+      "arguments": {"reason": "用户要求人工", "summary": "用户希望联系人工客服"},
+      "answer": "已为你打开联系方式登记表。",
+      "expects_contact_form": true
+    },
+    {
+      "name": "direct_answer",
+      "prompt": "你好",
+      "tool": null,
+      "answer": "你好，请问有什么可以帮助你？"
+    }
+  ]
+}
