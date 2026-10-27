@@ -1,0 +1,45 @@
+# Deploy only with the authenticated private metrics target and tested receiver routes.
+groups:
+  - name: customer-service-model-budget
+    interval: 30s
+    rules:
+      - alert: CustomerServiceModelBudgetCollectionUnavailable
+        expr: >-
+          up{job="customer-service-private"} == 0
+          or absent(customer_service_model_budget_collection_success{job="customer-service-private"})
+          or customer_service_model_budget_collection_success{job="customer-service-private"} == 0
+          or (time() - customer_service_model_budget_collection_timestamp_seconds{job="customer-service-private"}) > 300
+        for: 2m
+        labels:
+          severity: critical
+          owner: platform-oncall
+        annotations:
+          summary: Model budget evidence collection is missing, failed or stale
+          runbook: docs/model-budget-operations.md
+      - alert: CustomerServiceModelBudgetSoftThreshold
+        expr: increase(customer_service_model_budget_soft_threshold_events_total{job="customer-service-private"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          owner: service-oncall
+        annotations:
+          summary: A tenant, UTC day or Run crossed its configured model budget soft threshold
+          runbook: docs/model-budget-operations.md
+      - alert: CustomerServiceModelBudgetRejected
+        expr: increase(customer_service_model_budget_rejections_total{job="customer-service-private"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          owner: service-oncall
+        annotations:
+          summary: A model request was rejected by hard budget or conservative accounting controls
+          runbook: docs/model-budget-operations.md
+      - alert: CustomerServiceModelBudgetUnresolvedEvidence
+        expr: customer_service_model_budget_unresolved_tenants{job="customer-service-private"} > 0
+        for: 5m
+        labels:
+          severity: critical
+          owner: finance-oncall
+        annotations:
+          summary: Unreserved model attempts lack complete estimates and block protected tenants
+          runbook: docs/model-budget-operations.md

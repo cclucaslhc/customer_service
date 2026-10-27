@@ -20,6 +20,6 @@
   "devDependencies": {
     "@types/react": "latest",
     "@types/react-dom": "latest",
-    "vitest": "latest"
+    "vitest": "5.0.4"
   }
 }

@@ -1,0 +1,39 @@
+[Unit]
+Description=Customer service explicit RAG health monitor
+After=network-online.target
+Wants=network-online.target
+# Operator must supply this local alert handler before enabling the unit.
+OnFailure=customer-service-ops-alert@%n.service
+
+[Service]
+Type=exec
+User=customer-service-control
+Group=customer-service-control
+WorkingDirectory=/opt/customer-service/current
+ExecStart=/opt/customer-service/venv/bin/python /opt/customer-service/current/scripts/rag_rollout_watch.py --database-url-file /etc/customer-service-control/owner-url --control-file /etc/customer-service-control/rag-health.json --checks 1000000 --interval-seconds 30
+# Pause (exit 2), stale receipts, errors and bounded expiry need operator action.
+# Never automatically restart with potentially stale deployment bindings.
+Restart=no
+RuntimeMaxSec=7d
+TimeoutStopSec=15
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadOnlyPaths=/etc/customer-service-control
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=customer-service-rag-watch
+
+[Install]
+WantedBy=multi-user.target

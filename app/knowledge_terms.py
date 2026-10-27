@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import re
 
-from app.database import connect
+from app.persistence.knowledge_repository import LocalKnowledgeRepository
+
+
+default_repository = LocalKnowledgeRepository()
 
 
 DEFAULT_SYNONYM_GROUPS = [
@@ -35,23 +38,22 @@ STOPWORDS = {
 }
 
 
-def custom_synonym_groups() -> list[list[str]]:
-    with connect() as db:
-        row = db.execute("SELECT value FROM app_settings WHERE key='knowledge_synonyms'").fetchone()
-    if not row:
+def custom_synonym_groups(*, repository=None) -> list[list[str]]:
+    stored = (repository or default_repository).setting("knowledge_synonyms")
+    if not stored:
         return []
     try:
-        value = json.loads(row["value"])
+        value = json.loads(stored)
     except (TypeError, json.JSONDecodeError):
         return []
     return value if isinstance(value, list) else []
 
 
-def all_synonym_groups() -> list[list[str]]:
-    return [*DEFAULT_SYNONYM_GROUPS, *custom_synonym_groups()]
+def all_synonym_groups(*, repository=None) -> list[list[str]]:
+    return [*DEFAULT_SYNONYM_GROUPS, *custom_synonym_groups(repository=repository)]
 
 
-def save_custom_synonym_groups(groups: list[list[str]]) -> list[list[str]]:
+def save_custom_synonym_groups(groups: list[list[str]], *, repository=None) -> list[list[str]]:
     normalized: list[list[str]] = []
     seen: set[tuple[str, ...]] = set()
     for group in groups:
@@ -62,19 +64,15 @@ def save_custom_synonym_groups(groups: list[list[str]]) -> list[list[str]]:
         if key not in seen:
             normalized.append(values)
             seen.add(key)
-    with connect() as db:
-        db.execute(
-            "INSERT INTO app_settings(key,value) VALUES('knowledge_synonyms',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (json.dumps(normalized, ensure_ascii=False),),
-        )
+    (repository or default_repository).set_setting("knowledge_synonyms", json.dumps(normalized, ensure_ascii=False))
     return normalized
 
 
-def expand_query(query: str, terms: list[str]) -> tuple[list[str], list[str]]:
+def expand_query(query: str, terms: list[str], *, repository=None) -> tuple[list[str], list[str]]:
     haystack = query.casefold()
     expanded = list(terms)
     matched_groups: list[str] = []
-    for group in all_synonym_groups():
+    for group in all_synonym_groups(repository=repository):
         def matches(alias: str) -> bool:
             value = alias.casefold()
             if re.fullmatch(r"[a-z0-9][a-z0-9 ._+-]*", value):

@@ -12,6 +12,7 @@ from openpyxl import Workbook
 from openpyxl.chart import BarChart, Reference
 from PIL import Image, ImageDraw, ImageFont
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+from pydantic_ai.messages import ToolReturnPart
 from pptx import Presentation
 from pptx.chart.data import CategoryChartData
 from pptx.enum.chart import XL_CHART_TYPE
@@ -22,6 +23,7 @@ import app.database as database_module
 import app.agent as agent_module
 import app.knowledge as knowledge_module
 import app.knowledge_parsers as knowledge_parsers_module
+import app.security as security_module
 from app.chat import ChatOrchestrator
 from app.database import connect, init_database
 from app.knowledge import KnowledgeService, normalize_filename
@@ -51,6 +53,7 @@ def clean_database(tmp_path, monkeypatch):
     test_knowledge.mkdir()
     test_assets.mkdir()
     monkeypatch.setattr(database_module, "DATABASE_PATH", test_data / "app.db")
+    monkeypatch.setattr(security_module, "MASTER_KEY_PATH", test_data / "secrets" / "master.key")
     monkeypatch.setattr(knowledge_module, "KNOWLEDGE_DIR", test_knowledge)
     monkeypatch.setattr(knowledge_module, "KNOWLEDGE_ASSET_DIR", test_assets)
     monkeypatch.setattr(knowledge_module, "LEGACY_UPLOAD_DIR", test_data / "uploads")
@@ -228,6 +231,80 @@ async def test_tool_call_runs_to_final_answer_and_done_is_last() -> None:
         assert client.get(f"/api/chat/sessions/{empty_session_id}").status_code == 404
         with connect() as db:
             assert db.execute("SELECT count(*) FROM chat_sessions WHERE id=?", (empty_session_id,)).fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_knowledge_without_evidence_never_streams_model_claim() -> None:
+    class EmptyKnowledge:
+        def search(self, _query, limit=6):
+            return []
+
+    async def stream_model(messages, _info):
+        if any(isinstance(part, ToolReturnPart) for message in messages for part in message.parts):
+            yield "公司保修期为 99 年。"
+        else:
+            yield {0: DeltaToolCall(name="search_knowledge", json_args='{"query":"保修期"}', tool_call_id="search-empty")}
+
+    orchestrator = ChatOrchestrator(StubGateway(FunctionModel(stream_function=stream_model)), EmptyKnowledge())
+    session_id = orchestrator.create_session()["id"]
+    frames = await collect_stream(orchestrator, session_id, "公司保修期多长？")
+    assert all("99 年" not in json.dumps(frame, ensure_ascii=False) for frame in frames)
+    assert "无法确认" in visible_answer(frames)
+    assert [frame["event"] for frame in frames].count("token") == 1
+    assert frames[-1]["event"] == "done"
+    with connect() as db:
+        saved = db.execute("SELECT content FROM messages WHERE session_id=? AND role='assistant'", (session_id,)).fetchone()
+    assert saved["content"] == visible_answer(frames)
+
+
+@pytest.mark.asyncio
+async def test_unsupported_numeric_claim_is_not_streamed_or_cited() -> None:
+    async def stream_model(messages, _info):
+        if any(isinstance(part, ToolReturnPart) for message in messages for part in message.parts):
+            yield "云小智客服平台保修 99 年。"
+        else:
+            yield {0: DeltaToolCall(name="search_knowledge", json_args='{"query":"云小智客服平台"}', tool_call_id="search-number")}
+
+    orchestrator = ChatOrchestrator(StubGateway(FunctionModel(stream_function=stream_model)), StubKnowledge())
+    session_id = orchestrator.create_session()["id"]
+    frames = await collect_stream(orchestrator, session_id, "云小智客服平台保修多久？")
+    assert all("99 年" not in json.dumps(frame, ensure_ascii=False) for frame in frames)
+    assert "无法确认" in visible_answer(frames)
+    assert "citation" not in [frame["event"] for frame in frames]
+    assert frames[-1]["event"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_cited_document_revoked_before_answer_commit_resets_draft() -> None:
+    class ChangedKnowledge(StubKnowledge):
+        def search(self, query, limit=6):
+            rows = super().search(query, limit)
+            for row in rows:
+                row['id'] = 123
+                row['document_version'] = 1
+            return rows
+        def sources_current(self, sources):
+            assert sources and sources[0]['id'] == 123
+            return False
+
+    async def stream_model(messages, info):
+        if any(isinstance(part, ToolReturnPart) for part in messages[-1].parts):
+            yield '这是一段应被撤回的旧资料回答。'
+        else:
+            yield {0: DeltaToolCall(name='search_knowledge',
+                json_args='{"query":"公司主要产品"}', tool_call_id='changed-source')}
+
+    orchestrator = ChatOrchestrator(StubGateway(FunctionModel(stream_function=stream_model)), ChangedKnowledge())
+    session_id = orchestrator.create_session()['id']
+    frames = await collect_stream(orchestrator, session_id, '介绍公司主要产品')
+    events = [frame['event'] for frame in frames]
+    assert events[-2:] == ['answer_reset', 'error']
+    assert frames[-1]['data']['code'] == 'knowledge_changed'
+    assert 'done' not in events and 'citation' not in events
+    assert all('应被撤回的旧资料回答' not in json.dumps(frame, ensure_ascii=False) for frame in frames)
+    with connect() as db:
+        assert db.execute("SELECT count(*) FROM messages WHERE session_id=? AND role='assistant'",
+            (session_id,)).fetchone()[0] == 0
 
 
 def test_database_migrates_existing_sessions_with_lifecycle_columns(tmp_path, monkeypatch) -> None:
@@ -411,13 +488,39 @@ async def test_validation_exhaustion_sends_error_without_done_or_saved_answer() 
     assert dict(run) == {"status": "error", "error_code": "answer_validation_failed"}
 
 
+@pytest.mark.asyncio
+async def test_model_failure_after_partial_stream_resets_uncommitted_answer(caplog) -> None:
+    async def stream_model(_, __):
+        yield "这是未完成的草稿。"
+        raise RuntimeError("DO_NOT_LOG_SECRET synthetic provider failure")
+
+    orchestrator = ChatOrchestrator(StubGateway(FunctionModel(stream_function=stream_model)), StubKnowledge())
+    session_id = orchestrator.create_session()["id"]
+    frames = await collect_stream(orchestrator, session_id, "请回答")
+    events = [frame["event"] for frame in frames]
+
+    assert "token" in events
+    assert "done" not in events
+    assert events[-2:] == ["answer_reset", "error"]
+    assert frames[-1]["data"]["code"] == "model_error"
+    assert visible_answer(frames) == ""
+    with connect() as db:
+        assistant_count = db.execute("SELECT count(*) FROM messages WHERE session_id=? AND role='assistant'", (session_id,)).fetchone()[0]
+        run = db.execute("SELECT status,error_code FROM agent_runs WHERE session_id=?", (session_id,)).fetchone()
+    assert assistant_count == 0
+    assert dict(run) == {"status": "error", "error_code": "model_error"}
+    assert "failure_kind=unknown" in caplog.text
+    assert "delivery=unknown" in caplog.text
+    assert "DO_NOT_LOG_SECRET" not in caplog.text
+
+
 def test_health_and_provider_config() -> None:
     assert normalize_filename("\u00e4\u00b8\u00ad\u00e6\u0096\u0087.txt") == "中文.txt"
     with TestClient(app) as client:
         assert client.get("/health").json()["status"] == "ok"
         config = client.get("/api/admin/providers").json()
         assert config["active_provider"] == "deepseek"
-        assert {item["provider"] for item in config["providers"]} == {"deepseek", "openai"}
+        assert {item["provider"] for item in config["providers"]} == {"deepseek", "openai", "local"}
         assert not any(item["configured"] for item in config["providers"])
         for response in (client.get("/api"), client.get("/api/not-a-real-endpoint"), client.post("/api/not-a-real-endpoint")):
             assert response.status_code == 404
@@ -876,6 +979,16 @@ def test_contact_validation_and_storage() -> None:
         assert saved.status_code == 200
         contacts = client.get("/api/admin/contacts").json()
         assert contacts["items"][0]["phone"] == "13800138000"
+
+
+def test_contact_updates_reject_null_status_and_unknown_session() -> None:
+    with TestClient(app) as client:
+        saved = client.post("/api/contacts", json={"name": "Synthetic", "email": "test@example.com", "summary": "test"})
+        assert saved.status_code == 200
+        contact_id = saved.json()["id"]
+        assert client.patch(f"/api/admin/contacts/{contact_id}", json={"status": None}).status_code == 422
+        assert client.patch(f"/api/admin/contacts/{contact_id}", json={"note": None}).status_code == 200
+        assert client.post("/api/contacts", json={"session_id": "missing", "name": "Synthetic", "email": "test@example.com", "summary": "test"}).status_code == 404
 
 
 def test_enterprise_admin_session_detail_prompt_versions_and_audit() -> None:

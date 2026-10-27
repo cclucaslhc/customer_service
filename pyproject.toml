@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "PydanticAI based customer service MVP"
 requires-python = ">=3.10"
 dependencies = [
+  "SQLAlchemy==2.0.43",
   "cryptography>=50.0.0",
   "fastapi>=0.141.0",
   "httpx>=0.28.0",
@@ -12,7 +13,7 @@ dependencies = [
   "pillow>=11.3.0",
   "pydantic-ai>=2.31.0",
   "pymupdf>=1.26.0",
-  "pypdf>=6.16.0",
+  "pypdf>=6.21.2",
   "python-docx>=1.2.0",
   "python-multipart>=0.0.22",
   "python-pptx>=1.0.2",
@@ -24,10 +25,14 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=9.0", "pytest-asyncio>=1.4"]
+production = ["alembic==1.16.5", "psycopg[binary]==3.2.10", "redis==6.4.0", "boto3==1.40.43", "botocore==1.40.76", "opentelemetry-api==1.44.0", "opentelemetry-sdk==1.44.0", "opentelemetry-exporter-otlp-proto-http==1.44.0", "pgvector==0.5.1"]
+production-image = ["opencv-python-headless==5.0.0.93"]
+rag-local = ["huggingface-hub==0.36.0", "transformers==4.57.6", "safetensors==0.6.2", "torch>=2.9.1,<2.10"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = ["requires_local_rag_model: needs explicitly supplied verified local weights and CUDA"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

@@ -1,21 +1,39 @@
 import hashlib
 import json
+import logging
 import math
 import re
 import shutil
 import unicodedata
 import uuid
+from sqlalchemy.exc import SQLAlchemyError
 from pathlib import Path
 from typing import Callable
 
 import jieba
 
-from app.database import connect, utc_now
+from app.database import utc_now
+from app.object_store import ObjectReference, ObjectStoreError
+from app.persistence.knowledge_repository import KnowledgeRepository, KnowledgeWriteConflict, LocalKnowledgeRepository
 from app.knowledge_chunking import chunk_document, chunks_as_dicts
 from app.knowledge_models import CHUNKER_VERSION, PARSER_VERSION, ContentBlock, DocumentParseError, ParsedDocument
 from app.knowledge_parsers import parse_document as parse_structured_document
 from app.knowledge_terms import STOPWORDS, expand_query
+from app.knowledge_retrieval import (KnowledgeIndexChanged, RagConfigurationError, RagModelUnavailable,
+                                     RepositoryLexicalRetriever, RepositoryVectorRetriever)
+from app.rag_fusion import RankedCandidate, reciprocal_rank_fusion
+from app.rag_model_manifest import RERANKER_WEIGHT
+from app.tracing import operation_scope
 from app.settings import ALLOWED_EXTENSIONS, KNOWLEDGE_ASSET_DIR, KNOWLEDGE_DIR, LEGACY_UPLOAD_DIR, MAX_UPLOAD_BYTES, ROOT, SECRETS_DIR
+
+
+def decode_json(value, default):
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return default
+    return value if isinstance(value, type(default)) else default
 
 
 class KnowledgeError(ValueError):
@@ -27,6 +45,7 @@ class KnowledgeDuplicateError(KnowledgeError):
 
 
 TOKENIZER_VERSION = "2.0"
+logger = logging.getLogger(__name__)
 
 
 def is_within(path: Path, directory: Path) -> bool:
@@ -96,16 +115,53 @@ def chunk_sections(sections: list[tuple[str, str]], target_chars: int = 900) -> 
 
 
 class KnowledgeService:
+    def __init__(self, *, repository=None, knowledge_dir=None, asset_dir=None, legacy_upload_dir=None,
+                 object_store=None, lexical_retriever=None, vector_retriever=None,
+                 embedding_gateway=None, reranker=None, document_parser=None):
+        self.repository = repository or LocalKnowledgeRepository()
+        self.lexical_retriever = lexical_retriever or RepositoryLexicalRetriever(self.repository)
+        if vector_retriever is not None and embedding_gateway is not None:
+            raise ValueError('Select one vector retrieval source')
+        self.vector_retriever = vector_retriever or (RepositoryVectorRetriever(self.repository, embedding_gateway,
+            lexical_version=TOKENIZER_VERSION, chunker_version=CHUNKER_VERSION,
+            reranker_version=RERANKER_WEIGHT.revision if reranker is not None else None)
+                                                     if embedding_gateway is not None else None)
+        self.reranker = reranker
+        self.document_parser = document_parser
+        self.last_degraded_reason = None
+        self.object_store = object_store
+        self._knowledge_dir = knowledge_dir
+        self._asset_dir = asset_dir
+        self._legacy_upload_dir = legacy_upload_dir
+        # Raw/local construction remains lazy and must not inspect the default DB.
+        self._namespace = self.repository.storage_namespace() if isinstance(self.repository, KnowledgeRepository) else None
+        if self._namespace:
+            self._knowledge_dir = Path(knowledge_dir or KNOWLEDGE_DIR) / self._namespace
+            self._asset_dir = Path(asset_dir or KNOWLEDGE_ASSET_DIR) / self._namespace
+            self._legacy_upload_dir = Path(legacy_upload_dir or LEGACY_UPLOAD_DIR) / self._namespace
+
+    @property
+    def knowledge_dir(self):
+        return self._knowledge_dir or KNOWLEDGE_DIR
+
+    @property
+    def asset_dir(self):
+        return self._asset_dir or KNOWLEDGE_ASSET_DIR
+
+    @property
+    def legacy_upload_dir(self):
+        return self._legacy_upload_dir or LEGACY_UPLOAD_DIR
+
     def _asset_version_dir(self, document_id: str, version: int) -> Path:
-        directory = (KNOWLEDGE_ASSET_DIR / document_id / f"v{version}").resolve()
-        if not is_within(directory, KNOWLEDGE_ASSET_DIR):
+        directory = (self.asset_dir / document_id / f"v{version}").resolve()
+        if not is_within(directory, self.asset_dir):
             raise KnowledgeError("图片资产存储路径无效")
         return directory
 
     def _store_assets(self, parsed: ParsedDocument, document_id: str, version: int) -> list[dict]:
         if not parsed.assets:
             return []
-        directory = self._asset_version_dir(document_id, version)
+        directory = self._asset_version_dir(document_id, version).with_name(f"v{version}-{uuid.uuid4().hex}")
         directory.mkdir(parents=True, exist_ok=False)
         now = utc_now()
         stored: list[dict] = []
@@ -114,12 +170,18 @@ class KnowledgeService:
                 asset_id = str(uuid.uuid4())
                 filename = f"{asset_id}{asset.extension}"
                 path = directory / filename
-                path.write_bytes(asset.data)
+                metadata = dict(asset.metadata)
+                metadata.pop('_private_object', None)
+                if self.object_store:
+                    self.repository.require_manage()
+                    metadata['_private_object'] = self.object_store.put(self._namespace, asset.data, kind='assets').to_dict()
+                else:
+                    path.write_bytes(asset.data)
                 stored.append({
                     "id": asset_id,
                     "document_id": document_id,
                     "asset_index": asset.asset_index,
-                    "stored_name": str(path.relative_to(KNOWLEDGE_ASSET_DIR)).replace("\\", "/"),
+                    "stored_name": str(path.relative_to(self.asset_dir)).replace("\\", "/"),
                     "media_type": asset.media_type,
                     "size": len(asset.data),
                     "width": asset.width,
@@ -127,7 +189,7 @@ class KnowledgeService:
                     "location": asset.location,
                     "alt_text": asset.alt_text,
                     "sha256": hashlib.sha256(asset.data).hexdigest(),
-                    "metadata_json": json.dumps(asset.metadata, ensure_ascii=False),
+                    "metadata_json": json.dumps(metadata, ensure_ascii=False),
                     "created_at": now,
                 })
         except Exception:
@@ -136,8 +198,8 @@ class KnowledgeService:
         return stored
 
     def _cleanup_asset_versions(self, document_id: str, keep_version: int | None = None) -> None:
-        root = (KNOWLEDGE_ASSET_DIR / document_id).resolve()
-        if not is_within(root, KNOWLEDGE_ASSET_DIR) or not root.exists():
+        root = (self.asset_dir / document_id).resolve()
+        if not is_within(root, self.asset_dir) or not root.exists():
             return
         for child in root.iterdir():
             if keep_version is not None and child.name == f"v{keep_version}":
@@ -147,20 +209,27 @@ class KnowledgeService:
         if keep_version is None and root.exists() and not any(root.iterdir()):
             root.rmdir()
 
+    def _cleanup_asset_records(self, records: list[dict]) -> None:
+        """Remove only exact previous/failed manifest files, never another attempt."""
+        for record in records:
+            path = (self.asset_dir / record["stored_name"]).resolve()
+            if not is_within(path, self.asset_dir):
+                continue
+            path.unlink(missing_ok=True)
+            if path.parent != self.asset_dir.resolve() and path.parent.is_dir() and not any(path.parent.iterdir()):
+                path.parent.rmdir()
+
     def _managed_path(self, filename: str, digest: str, source_path: Path | None = None) -> Path:
         if source_path:
             resolved_source = source_path.resolve()
             try:
-                resolved_source.relative_to(KNOWLEDGE_DIR.resolve())
+                resolved_source.relative_to(self.knowledge_dir.resolve())
                 return resolved_source
             except ValueError:
                 pass
 
-        safe_name = Path(filename).name
-        destination = KNOWLEDGE_DIR / safe_name
-        if destination.exists() and hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
-            destination = KNOWLEDGE_DIR / f"{Path(safe_name).stem}-{digest[:8]}{Path(safe_name).suffix.lower()}"
-        return destination
+        # Independent attempts must not overwrite/unlink each other's files.
+        return self.knowledge_dir / f"{uuid.uuid4().hex}-{digest[:12]}{Path(filename).suffix.lower()}"
 
     def ingest(
         self,
@@ -169,7 +238,15 @@ class KnowledgeService:
         source_path: Path | None = None,
         force: bool = False,
         progress: Callable[[dict], None] | None = None,
+        immutable_copy: bool = False,
+        _replace_document: tuple[str, int] | None = None,
+        _source_identity: str | None = None,
     ) -> dict:
+        self.repository.require_manage()
+        if self.object_store and not self._namespace:
+            raise KnowledgeError('对象存储要求已认证的租户知识库')
+        if self._namespace and source_path and not is_within(source_path, self.knowledge_dir):
+            raise KnowledgeError("不能从租户托管目录外导入文件")
         display_name = normalize_filename(filename)
         extension = Path(display_name).suffix.lower()
         if extension not in ALLOWED_EXTENSIONS:
@@ -179,25 +256,29 @@ class KnowledgeService:
         if not data:
             raise KnowledgeError("文件为空")
         digest = hashlib.sha256(data).hexdigest()
-        source_value = str(source_path.resolve()) if source_path else None
-        with connect() as db:
-            existing = db.execute(
-                "SELECT * FROM documents WHERE source_path=? ORDER BY version DESC LIMIT 1",
-                (source_value,),
-            ).fetchone() if source_value else None
-            duplicate = db.execute("SELECT id,source_path FROM documents WHERE sha256=?", (digest,)).fetchone()
+        source_value = _source_identity or (str(source_path.resolve()) if source_path else None)
+        existing, duplicate = self.repository.lookup_ingest(source_value, digest)
+        if _replace_document:
+            existing = self.repository.document(_replace_document[0])
+            if not existing or existing['version'] != _replace_document[1]:
+                raise KnowledgeError('文档在重新解析期间已变化')
+            source_value = existing['source_path']
         if duplicate and (existing is None or duplicate["id"] != existing["id"]):
             raise KnowledgeDuplicateError("该文件已经建立索引")
         if existing is not None and existing["sha256"] == digest and not force:
             raise KnowledgeDuplicateError("该文件内容未变化，已跳过")
         doc_id = existing["id"] if existing else str(uuid.uuid4())
         version = int(existing["version"] or 1) + 1 if existing else 1
-        previous_managed_path = (KNOWLEDGE_DIR / existing["stored_name"]).resolve() if existing else None
+        previous_managed_path = (self.knowledge_dir / existing["stored_name"]).resolve() if existing else None
+        previous_assets = self.repository.assets([doc_id]) if existing else []
+        stored_assets = []
+        owned_copy = False
+        published = False
         try:
             if progress:
                 progress({"stage": "parsing", "current_file": display_name})
             try:
-                parsed = parse_structured_document(display_name, data)
+                parsed = (self.document_parser or parse_structured_document)(display_name, data)
             except DocumentParseError as exc:
                 raise KnowledgeError(str(exc)) from exc
             if progress:
@@ -205,84 +286,61 @@ class KnowledgeService:
             chunks = chunks_as_dicts(chunk_document(parsed))
             if not chunks:
                 raise KnowledgeError("文档没有可索引的文字")
-            path = self._managed_path(display_name, digest, source_path)
+            path = self._managed_path(display_name, digest, None if immutable_copy else source_path)
             path.parent.mkdir(parents=True, exist_ok=True)
-            if source_path is None or path.resolve() != source_path.resolve():
-                path.write_bytes(data)
-            stored_name = str(path.relative_to(KNOWLEDGE_DIR))
+            if not self.object_store and (source_path is None or path.resolve() != source_path.resolve()):
+                with path.open("xb") as destination:
+                    owned_copy = True
+                    destination.write(data)
+            stored_name = str(path.relative_to(self.knowledge_dir))
             source_value = source_value or str(path.resolve())
-            source_mtime = source_path.stat().st_mtime if source_path and source_path.exists() else path.stat().st_mtime
+            source_mtime = source_path.stat().st_mtime if source_path and source_path.exists() else (None if self.object_store else path.stat().st_mtime)
             now = utc_now()
             stored_assets = self._store_assets(parsed, doc_id, version)
             parsed.metadata["asset_count"] = len(stored_assets)
+            parsed.metadata.pop('_private_object', None)
+            if self.object_store:
+                self.repository.require_manage()
+                parsed.metadata['_private_object'] = self.object_store.put(self._namespace, data, kind='knowledge').to_dict()
             if progress:
                 progress({"stage": "indexing", "current_file": display_name})
-            with connect() as db:
-                if existing:
-                    db.execute("DELETE FROM knowledge_chunks WHERE document_id=?", (doc_id,))
-                    db.execute("DELETE FROM knowledge_assets WHERE document_id=?", (doc_id,))
-                    db.execute(
-                        """UPDATE documents SET
-                               display_name=?,stored_name=?,extension=?,size=?,sha256=?,status='ready',
-                               error_message=NULL,chunk_count=?,detected_type=?,source_path=?,source_mtime=?,
-                               parser_version=?,chunker_version=?,indexed_at=?,version=?,warnings_json=?,metadata_json=?
-                           WHERE id=?""",
-                        (
-                            display_name, stored_name, extension, len(data), digest, len(chunks),
-                            parsed.document_type, source_value, source_mtime, PARSER_VERSION, CHUNKER_VERSION,
-                            now, version,
-                            json.dumps(parsed.warnings, ensure_ascii=False),
-                            json.dumps(parsed.metadata, ensure_ascii=False), doc_id,
-                        ),
-                    )
-                else:
-                    db.execute(
-                        """INSERT INTO documents(
-                           id,display_name,stored_name,extension,size,sha256,status,chunk_count,
-                           detected_type,source_path,source_mtime,parser_version,chunker_version,
-                           indexed_at,version,warnings_json,metadata_json,created_at
-                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (
-                            doc_id, display_name, stored_name, extension, len(data), digest, "ready", len(chunks),
-                            parsed.document_type, source_value, source_mtime, PARSER_VERSION, CHUNKER_VERSION,
-                            now, version, json.dumps(parsed.warnings, ensure_ascii=False),
-                            json.dumps(parsed.metadata, ensure_ascii=False), now,
-                        ),
-                    )
-                for index, chunk in enumerate(chunks):
-                    db.execute(
-                        """INSERT INTO knowledge_chunks(
-                               document_id,chunk_index,section,location,content,tokenized,
-                               block_type,metadata_json,char_count
-                           ) VALUES(?,?,?,?,?,?,?,?,?)""",
-                        (
-                            doc_id, index, chunk["section"], chunk["location"], chunk["content"],
-                            tokenize(chunk["content"]), chunk["block_type"],
-                            json.dumps(chunk["metadata"], ensure_ascii=False), len(chunk["content"]),
-                        ),
-                    )
-                for asset in stored_assets:
-                    db.execute(
-                        """INSERT INTO knowledge_assets(
-                               id,document_id,asset_index,stored_name,media_type,size,width,height,
-                               location,alt_text,sha256,metadata_json,created_at
-                           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        tuple(asset[key] for key in (
-                            "id", "document_id", "asset_index", "stored_name", "media_type", "size",
-                            "width", "height", "location", "alt_text", "sha256", "metadata_json", "created_at",
-                        )),
-                    )
-            if previous_managed_path and previous_managed_path != path.resolve() and is_within(previous_managed_path, KNOWLEDGE_DIR):
-                previous_managed_path.unlink(missing_ok=True)
-            self._cleanup_asset_versions(doc_id, keep_version=version)
-        except Exception:
-            cleanup_path = locals().get("path")
-            if cleanup_path and (source_path is None or cleanup_path.resolve() != source_path.resolve()):
-                if not existing or cleanup_path.resolve() != previous_managed_path:
+            document = {
+                "id": doc_id, "display_name": display_name, "stored_name": stored_name, "extension": extension,
+                "size": len(data), "sha256": digest, "status": "ready", "error_message": None, "chunk_count": len(chunks),
+                "detected_type": parsed.document_type, "source_path": source_value, "source_mtime": source_mtime,
+                "parser_version": PARSER_VERSION, "chunker_version": CHUNKER_VERSION, "indexed_at": now,
+                "version": version, "warnings_json": parsed.warnings, "metadata_json": parsed.metadata, "created_at": now,
+            }
+            chunk_rows = [
+                {"document_id": doc_id, "chunk_index": index, "section": chunk["section"], "location": chunk["location"],
+                 "content": chunk["content"], "tokenized": tokenize(chunk["content"]), "block_type": chunk["block_type"],
+                 "metadata_json": chunk["metadata"], "char_count": len(chunk["content"])}
+                for index, chunk in enumerate(chunks)
+            ]
+            try:
+                self.repository.publish_document(document, chunk_rows, stored_assets, existing["version"] if existing else None)
+            except KnowledgeWriteConflict as exc:
+                raise KnowledgeError("文档在解析期间已被更新或导入，请刷新后重试") from exc
+            published = True
+            try:
+                if (previous_managed_path and previous_managed_path != path.resolve()
+                        and (source_path is None or previous_managed_path != source_path.resolve())
+                        and is_within(previous_managed_path, self.knowledge_dir)):
+                    previous_managed_path.unlink(missing_ok=True)
+                self._cleanup_asset_records(previous_assets)
+            except OSError as exc:
+                # Cleanup failure cannot undo committed DB metadata or remove
+                # the newly published files. Orphan GC is a separate S1 task.
+                logger.warning("knowledge cleanup deferred document_id=%s exception_type=%s", doc_id, type(exc).__name__)
+        except Exception as exc:
+            # A transport error may be a lost COMMIT acknowledgement. Deleting
+            # staging files would then corrupt an already committed document.
+            # Keep ambiguous files for later manifest-aware reconciliation/GC.
+            if not published and not isinstance(exc,SQLAlchemyError):
+                cleanup_path = locals().get("path")
+                if owned_copy and cleanup_path:
                     cleanup_path.unlink(missing_ok=True)
-            asset_version_path = self._asset_version_dir(doc_id, version)
-            if asset_version_path.exists():
-                shutil.rmtree(asset_version_path, ignore_errors=True)
+                self._cleanup_asset_records(stored_assets)
             raise
         return {
             "id": doc_id, "display_name": display_name, "status": "ready",
@@ -292,16 +350,20 @@ class KnowledgeService:
         }
 
     def location(self) -> dict:
+        self.repository.require_manage()
         return {
-            "path": str(KNOWLEDGE_DIR.resolve()),
+            "path": str(self.knowledge_dir.resolve()),
             "supported_extensions": sorted(ALLOWED_EXTENSIONS),
         }
 
     def _import_candidates(self, raw_path: str, recursive: bool = True) -> tuple[Path, list[Path]]:
+        self.repository.require_manage()
         source = Path(raw_path.strip().strip('"')).expanduser()
         if not source.is_absolute():
             source = ROOT / source
         source = source.resolve()
+        if self._namespace and not is_within(source, self.knowledge_dir):
+            raise KnowledgeError("不能扫描租户托管目录外的文件")
         if not source.exists():
             raise KnowledgeError("文件或目录不存在")
         if is_within(source, SECRETS_DIR):
@@ -314,7 +376,7 @@ class KnowledgeService:
             candidates = sorted(
                 [
                     path for path in source.glob(pattern)
-                    if path.is_file() and not is_within(path, SECRETS_DIR)
+                    if path.is_file() and not is_within(path, SECRETS_DIR) and (not self._namespace or is_within(path, self.knowledge_dir))
                 ],
                 key=lambda path: str(path).casefold(),
             )
@@ -377,44 +439,60 @@ class KnowledgeService:
         }
 
     def list_documents(self) -> list[dict]:
-        with connect() as db:
-            rows = [dict(row) for row in db.execute(
-                """SELECT d.*,(SELECT count(*) FROM knowledge_assets a WHERE a.document_id=d.id) asset_count
-                   FROM documents d ORDER BY d.created_at DESC"""
-            ).fetchall()]
+        rows = self.repository.list_documents()
         for row in rows:
-            row["warnings"] = json.loads(row.pop("warnings_json", "[]") or "[]")
-            row["metadata"] = json.loads(row.pop("metadata_json", "{}") or "{}")
+            row["warnings"] = decode_json(row.pop("warnings_json", "[]"), [])
+            row["metadata"] = decode_json(row.pop("metadata_json", "{}"), {})
+            row['metadata'].pop('_private_object', None)
         return rows
 
+    def _object_content(self, row: dict, *, kind: str) -> bytes:
+        reference = ObjectReference.from_dict(decode_json(row.get('metadata_json'), {})['_private_object'])
+        if (reference.sha256 != row['sha256'] or reference.size != row['size']
+                or not reference.key.startswith(f'tenants/{self._namespace}/{kind}/')):
+            raise ObjectStoreError('Private object reference disagrees with publication manifest')
+        if not self.object_store:
+            raise ObjectStoreError('Private object storage not configured')
+        return self.object_store.get(self._namespace, reference)
+
     def reparse(self, document_id: str) -> dict:
-        with connect() as db:
-            row = db.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone()
+        self.repository.require_manage()
+        row = self.repository.document(document_id)
         if not row:
             raise KnowledgeError("文档不存在")
-        source = Path(row["source_path"]) if row["source_path"] else KNOWLEDGE_DIR / row["stored_name"]
+        reference = decode_json(row.get('metadata_json'), {}).get('_private_object')
+        if reference is not None:
+            if not self.object_store:
+                raise KnowledgeError('对象存储未配置，无法重新解析')
+            self.repository.require_manage()
+            data = self._object_content(row, kind='knowledge')
+            self.repository.require_manage()
+            return self.ingest(row['display_name'], data, force=True, _replace_document=(row['id'], row['version']))
+        source = Path(row["source_path"]) if row["source_path"] else self.knowledge_dir / row["stored_name"]
+        if self._namespace and not is_within(source, self.knowledge_dir):
+            raise KnowledgeError("文档源文件不在租户托管目录")
         if not source.is_file():
             raise KnowledgeError("源文件不存在，无法重新解析")
-        return self.ingest(source.name, source.read_bytes(), source_path=source, force=True)
+        return self.ingest(row["display_name"], source.read_bytes(), source_path=source, force=True)
 
     def delete(self, document_id: str) -> None:
-        with connect() as db:
-            row = db.execute("SELECT stored_name FROM documents WHERE id=?", (document_id,)).fetchone()
-            if not row:
-                raise KnowledgeError("文档不存在")
-        managed_path = (KNOWLEDGE_DIR / row["stored_name"]).resolve()
+        self.repository.require_manage()
+        row = self.repository.document(document_id)
+        if not row:
+            raise KnowledgeError("文档不存在")
+        managed_path = (self.knowledge_dir / row["stored_name"]).resolve()
         try:
-            managed_path.relative_to(KNOWLEDGE_DIR.resolve())
+            managed_path.relative_to(self.knowledge_dir.resolve())
         except ValueError as exc:
             raise KnowledgeError("文档存储路径无效") from exc
-        with connect() as db:
-            db.execute("DELETE FROM documents WHERE id=?", (document_id,))
+        if not self.repository.delete_document(document_id, row["version"]):
+            raise KnowledgeError("文档已被更新，请刷新后重试")
         self._cleanup_asset_versions(document_id)
         if managed_path.exists():
             managed_path.unlink()
         else:
             # 兼容改版前保存在 data/uploads 中的哈希命名文档。
-            (LEGACY_UPLOAD_DIR / row["stored_name"]).unlink(missing_ok=True)
+            (self.legacy_upload_dir / row["stored_name"]).unlink(missing_ok=True)
 
     @staticmethod
     def _public_asset(row: dict) -> dict:
@@ -429,90 +507,127 @@ class KnowledgeService:
         }
 
     def list_assets(self, document_id: str) -> list[dict]:
-        with connect() as db:
-            rows = db.execute(
-                "SELECT * FROM knowledge_assets WHERE document_id=? ORDER BY asset_index",
-                (document_id,),
-            ).fetchall()
-        return [self._public_asset(dict(row)) for row in rows]
+        return [self._public_asset(row) for row in self.repository.assets([document_id])]
 
     def asset_file(self, asset_id: str) -> tuple[Path, str]:
-        with connect() as db:
-            row = db.execute(
-                """SELECT a.stored_name,a.media_type FROM knowledge_assets a
-                   JOIN documents d ON d.id=a.document_id
-                   WHERE a.id=? AND d.status='ready'""",
-                (asset_id,),
-            ).fetchone()
+        row = self.repository.asset(asset_id)
         if not row:
             raise KnowledgeError("图片资产不存在")
-        path = (KNOWLEDGE_ASSET_DIR / row["stored_name"]).resolve()
-        if not is_within(path, KNOWLEDGE_ASSET_DIR) or not path.is_file():
+        if '_private_object' in decode_json(row.get('metadata_json'), {}):
+            raise KnowledgeError('远程资产必须通过鉴权内容接口读取')
+        path = (self.asset_dir / row["stored_name"]).resolve()
+        if not is_within(path, self.asset_dir) or not path.is_file():
             raise KnowledgeError("图片资产不存在")
         if row["media_type"] != "image/png" or path.suffix.lower() != ".png":
             raise KnowledgeError("图片资产类型无效")
         return path, row["media_type"]
 
+    def asset_content(self, asset_id: str) -> tuple[bytes, str]:
+        row = self.repository.asset(asset_id)  # Authorization before any remote I/O.
+        if not row or row['media_type'] != 'image/png':
+            raise KnowledgeError('图片资产不存在或类型无效')
+        reference = decode_json(row.get('metadata_json'), {}).get('_private_object')
+        if reference is None:
+            path, media_type = self.asset_file(asset_id)
+            return path.read_bytes(), media_type
+        if not self.object_store:
+            raise ObjectStoreError('Private object storage not configured')
+        data = self._object_content(row, kind='assets')
+        if self.repository.asset(asset_id) != row:
+            raise KnowledgeError('图片资产在读取期间已变化')
+        return data, row['media_type']
+
     def rebuild(self) -> int:
-        with connect() as db:
-            rows = db.execute("SELECT id, content FROM knowledge_chunks").fetchall()
-            for row in rows:
-                db.execute("UPDATE knowledge_chunks SET tokenized=? WHERE id=?", (tokenize(row["content"]), row["id"]))
-            db.execute("INSERT INTO knowledge_fts(knowledge_fts) VALUES('rebuild')")
-            db.execute(
-                "INSERT INTO app_settings(key,value) VALUES('knowledge_tokenizer_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (TOKENIZER_VERSION,),
-            )
-        return len(rows)
+        return self.repository.rebuild(tokenize, TOKENIZER_VERSION)
 
     def ensure_index_current(self) -> int:
-        with connect() as db:
-            row = db.execute("SELECT value FROM app_settings WHERE key='knowledge_tokenizer_version'").fetchone()
-        return 0 if row and row["value"] == TOKENIZER_VERSION else self.rebuild()
+        return 0 if self.repository.setting("knowledge_tokenizer_version") == TOKENIZER_VERSION else self.rebuild()
 
-    def search(self, query: str, limit: int = 6) -> list[dict]:
+    def active_index_id(self):
+        if isinstance(self.vector_retriever, RepositoryVectorRetriever):
+            profile = self.repository.active_vector_profile()
+            return profile['index_id'] if profile is not None else None
+        return None
+
+    def supports_rag_routing(self):
+        return (isinstance(self.repository,KnowledgeRepository)
+            and self.repository.engine.dialect.name=='postgresql'
+            and isinstance(self.vector_retriever,RepositoryVectorRetriever))
+
+    def for_route(self,route):
+        """Per-run copy: model gateways may be shared, mutable routing may not."""
+        from copy import copy
+        if not self.supports_rag_routing():
+            raise ValueError('Run routing requires the PostgreSQL vector repository')
+        clone=copy(self)
+        clone.repository=self.repository.with_route(route)
+        clone.vector_retriever=copy(self.vector_retriever)
+        clone.vector_retriever.repository=clone.repository
+        if isinstance(self.lexical_retriever,RepositoryLexicalRetriever):
+            clone.lexical_retriever=RepositoryLexicalRetriever(clone.repository)
+        return clone
+
+    def require_index(self, index_id):
+        if self.active_index_id() != index_id:
+            raise KnowledgeIndexChanged()
+
+    def search(self, query: str, limit: int = 6, *, index_id=None, pinned=False) -> list[dict]:
+        if pinned:
+            self.require_index(index_id)
+        self.last_degraded_reason = None
         base_terms = _word_terms(query)
-        expanded_values, synonym_groups = expand_query(query, base_terms)
+        expanded_values, synonym_groups = expand_query(query, base_terms, repository=self.repository)
         match_terms: list[str] = []
         for value in expanded_values:
             match_terms.extend(tokenize(value).split())
         match_terms = list(dict.fromkeys(match_terms))
         if not match_terms:
             return []
-        match_query = " OR ".join(f'"{term.replace(chr(34), "")}"' for term in match_terms[:64])
         candidate_limit = min(max(limit * 5, 20), 100)
-        with connect() as db:
-            fts_rows = db.execute(
-                """
-                SELECT c.id,c.content,c.section,c.location,c.block_type,c.metadata_json,d.id document_id,d.display_name,
-                       bm25(knowledge_fts) score
-                FROM knowledge_fts
-                JOIN knowledge_chunks c ON c.id=knowledge_fts.rowid
-                JOIN documents d ON d.id=c.document_id
-                WHERE knowledge_fts MATCH ?
-                ORDER BY score LIMIT ?
-                """,
-                (match_query, candidate_limit),
-            ).fetchall()
-            semantic_rows = db.execute(
-                """SELECT c.id,c.content,c.section,c.location,c.block_type,c.metadata_json,d.id document_id,d.display_name
-                   FROM knowledge_chunks c JOIN documents d ON d.id=c.document_id
-                   WHERE d.status='ready' ORDER BY c.id DESC LIMIT 5000"""
-            ).fetchall()
+        candidate_batch = self.lexical_retriever.candidates(match_terms, candidate_limit)
+        fts_rows, character_rows = candidate_batch.ranked, candidate_batch.character_pool
+        vector_rows = []
+        if self.vector_retriever is not None:
+            try:
+                vector_rows = (self.vector_retriever.candidates(query, limit=candidate_limit,
+                    index_id=index_id) if isinstance(self.vector_retriever, RepositoryVectorRetriever)
+                    else self.vector_retriever.candidates(query, limit=candidate_limit))
+            except (RagModelUnavailable, RagConfigurationError) as exc:
+                self.last_degraded_reason = type(exc).__name__
+                logger.warning('RAG vector degraded reason=%s', self.last_degraded_reason)
+        if pinned:
+            self.require_index(index_id)
+        fusion_scores = {}
+        if vector_rows:
+            tenant = self.repository.storage_namespace()
+            def ranked(rows, channel):
+                return [RankedCandidate(
+                    tenant_id=row['tenant_id'], document_id=row['document_id'],
+                    document_version=row['document_version'], chunk_id=str(row['id']),
+                    content_sha256=row.get('content_sha256') or hashlib.sha256(
+                        row['content'].encode('utf-8')).hexdigest(), channel=channel, rank=rank)
+                    for rank, row in enumerate(rows, 1)]
+            with operation_scope('rag.fuse', rag_stage='fuse'):
+                fused = reciprocal_rank_fusion({'lexical': ranked(fts_rows, 'lexical'),
+                    'vector': ranked(vector_rows, 'vector')}, tenant_id=tenant,
+                    limit=candidate_limit)
+            fusion_scores = {item.candidate.chunk_id: item.score * 60 for item in fused}
         normalized_query = re.sub(r"\s+", "", query.casefold())
         query_terms = set(base_terms)
         query_ngrams = set(_character_ngrams(query))
         model_terms = set(re.findall(r"[a-z]{1,12}[a-z0-9.-]*\d[a-z0-9.-]*", query.casefold()))
         candidates = {row["id"]: dict(row) for row in fts_rows}
+        for rank, row in enumerate(vector_rows, 1):
+            candidates.setdefault(row['id'], {**row, 'score': 0.0, 'score_kind': 'vector'})
         semantic_scores: dict[int, float] = {}
-        for row in semantic_rows:
+        for row in character_rows:
             item = dict(row)
             haystack = f"{item.get('display_name', '')} {item.get('section', '')} {item['content']}"
             grams = set(_character_ngrams(haystack))
             similarity = len(query_ngrams & grams) / math.sqrt(max(len(query_ngrams) * len(grams), 1))
             if similarity >= 0.04:
                 semantic_scores[item["id"]] = similarity
-                candidates.setdefault(item["id"], {**item, "score": 0.0})
+                candidates.setdefault(item["id"], {**item, "score": 0.0, "score_kind": "character_fallback"})
         ranked: list[dict] = []
         for item in candidates.values():
             haystack = f"{item.get('display_name', '')} {item.get('section', '')} {item['content']}".casefold()
@@ -523,39 +638,56 @@ class KnowledgeService:
             title_boost = 0.35 if any(term in (item.get("section") or "").casefold() for term in query_terms) else 0.0
             model_boost = 0.75 if model_terms and any(term in haystack for term in model_terms) else 0.0
             semantic = semantic_scores.get(item["id"], 0.0)
-            bm25_boost = min(max(-float(item.get("score") or 0) / 10, 0.0), 0.5)
-            relevance = lexical + exact_boost + title_boost + model_boost + semantic * 0.8 + bm25_boost
+            raw_score = -float(item.get("score") or 0)
+            lexical_boost = min(max(raw_score if item.get("score_kind") == "postgres_ts_rank" else raw_score / 10, 0.0), 0.5)
+            fusion_boost = fusion_scores.get(str(item['id']), 0.0)
+            relevance = lexical + exact_boost + title_boost + model_boost + semantic * 0.8 + lexical_boost + fusion_boost
             item["relevance"] = round(relevance, 4)
             item["ranking"] = {
                 "term_coverage": round(lexical, 4),
+                "lexical_score_kind": item.get("score_kind"),
                 "phrase_boost": exact_boost,
                 "section_boost": title_boost,
                 "model_boost": model_boost,
                 "character_similarity": round(semantic, 4),
                 "matched_synonyms": synonym_groups,
+                "fusion_boost": round(fusion_boost, 4),
             }
             ranked.append(item)
         ranked.sort(key=lambda item: (-item["relevance"], item["score"]))
-        results = [item for item in ranked if item["relevance"] >= 0.12][:limit]
+        if self.reranker is not None and ranked:
+            pool = ranked[:min(16, len(ranked))]
+            try:
+                with operation_scope('rag.rerank', rag_stage='rerank'):
+                    scores = self.reranker.score(query, [item['content'] for item in pool])
+                if len(scores) != len(pool) or any(not math.isfinite(score) or not 0 <= score <= 1 for score in scores):
+                    raise ValueError('Invalid local Reranker scores')
+                for item, score in zip(pool, scores):
+                    item['ranking']['reranker_score'] = round(score, 4)
+                    item['relevance'] = round(item['relevance'] + score, 4)
+                ranked.sort(key=lambda item: (-item['relevance'], item['score']))
+            except (RuntimeError, ValueError) as exc:
+                self.last_degraded_reason = type(exc).__name__
+                logger.warning('RAG reranker degraded reason=%s', self.last_degraded_reason)
+        # Keep a bounded reserve until the final scoped version/visibility
+        # check. Otherwise a revoked top hit leaves a hole even when the next
+        # ranked candidate is still current and authorized.
+        pool_limit = candidate_limit if hasattr(self.repository, 'filter_current_results') else limit
+        results = [item for item in ranked if item["relevance"] >= 0.12][:pool_limit]
         if not results:
             return []
         document_ids = list(dict.fromkeys(item["document_id"] for item in results))
-        placeholders = ",".join("?" for _ in document_ids)
-        with connect() as db:
-            asset_rows = [dict(row) for row in db.execute(
-                f"SELECT * FROM knowledge_assets WHERE document_id IN ({placeholders}) ORDER BY asset_index",
-                document_ids,
-            ).fetchall()]
+        asset_rows = self.repository.assets(document_ids)
         assets_by_document: dict[str, list[dict]] = {}
         for asset in asset_rows:
             try:
-                asset["metadata"] = json.loads(asset.pop("metadata_json", "{}") or "{}")
+                asset["metadata"] = decode_json(asset.pop("metadata_json", "{}"), {})
             except (TypeError, json.JSONDecodeError):
                 asset["metadata"] = {}
             assets_by_document.setdefault(asset["document_id"], []).append(asset)
         for item in results:
             try:
-                metadata = json.loads(item.pop("metadata_json", "{}") or "{}")
+                metadata = decode_json(item.pop("metadata_json", "{}"), {})
             except (TypeError, json.JSONDecodeError):
                 metadata = {}
             def metadata_values(value: dict, key: str) -> set:
@@ -576,4 +708,14 @@ class KnowledgeService:
                 if exact or same_page or same_slide:
                     matches.append(self._public_asset(asset))
             item["images"] = matches[:3]
-        return results
+        if hasattr(self.repository, 'filter_current_results'):
+            return self.repository.filter_current_results(results)[:limit]
+        return results[:limit]
+
+    def sources_current(self, sources: list[dict]) -> bool:
+        """Recheck cited source identities before committing an Agent answer."""
+        if not sources:
+            return True
+        if not hasattr(self.repository, 'filter_current_results'):
+            return True  # Local MVP has no PostgreSQL versioned citation contract.
+        return len(self.repository.filter_current_results(sources)) == len(sources)

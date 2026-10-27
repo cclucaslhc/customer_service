@@ -1,9 +1,11 @@
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 
-ProviderName = Literal["deepseek", "openai"]
+ProviderName = Literal["deepseek", "openai", "local"]
+MoneyString = str
 
 
 class ProviderUpdate(BaseModel):
@@ -20,7 +22,52 @@ class ActiveProviderUpdate(BaseModel):
     provider: ProviderName
 
 
+class ModelPricePublish(BaseModel):
+    publication_id: UUID
+    expected_version: int = Field(ge=0)
+    model: str = Field(min_length=1,max_length=200)
+    currency: Literal['CNY','USD']
+    input_rate: MoneyString = Field(pattern=r'^[0-9]{1,19}(\.[0-9]{1,9})?$')
+    output_rate: MoneyString = Field(pattern=r'^[0-9]{1,19}(\.[0-9]{1,9})?$')
+    cache_read_rate: MoneyString = Field(pattern=r'^[0-9]{1,19}(\.[0-9]{1,9})?$')
+    cache_write_rate: MoneyString = Field(pattern=r'^[0-9]{1,19}(\.[0-9]{1,9})?$')
+    source_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+
+
+class ModelBudgetPublish(BaseModel):
+    publication_id: UUID
+    expected_version: int = Field(ge=0)
+    provider: Literal['deepseek','openai','local']
+    model: str = Field(min_length=1,max_length=200)
+    currency: Literal['CNY','USD']
+    tenant_limit: MoneyString = Field(pattern=r'^[0-9]{1,19}(\.[0-9]{1,9})?$')
+    day_limit: MoneyString = Field(pattern=r'^[0-9]{1,19}(\.[0-9]{1,9})?$')
+    run_limit: MoneyString = Field(pattern=r'^[0-9]{1,19}(\.[0-9]{1,9})?$')
+    input_token_ceiling: int = Field(ge=1,le=1_000_000_000)
+    output_token_limit: int = Field(ge=1,le=1_000_000_000)
+    max_run_requests: int = Field(ge=1,le=10_000)
+    soft_percent: int = Field(ge=1,le=99)
+    source_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+
+
+class ModelFallbackConsentPublish(BaseModel):
+    publication_id: UUID
+    expected_version: int = Field(ge=0)
+    enabled: bool
+
+
+class ModelRouteBudgetPublish(BaseModel):
+    publication_id: UUID
+    expected_version: int = Field(ge=0)
+    model: str = Field(min_length=1,max_length=200)
+    currency: Literal['CNY','USD']
+    input_token_ceiling: int = Field(ge=1,le=1_000_000_000)
+    output_token_limit: int = Field(ge=1,le=1_000_000_000)
+    source_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+
+
 class ChatMessageInput(BaseModel):
+    request_id: UUID | None = None
     content: str = Field(min_length=1, max_length=8000)
 
 
@@ -85,6 +132,13 @@ class KnowledgeSearchInput(BaseModel):
 class ContactAdminUpdate(BaseModel):
     status: Literal["new", "following", "closed"] | None = None
     note: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("status")
+    @classmethod
+    def status_cannot_be_null(cls, value):
+        if value is None:
+            raise ValueError("联系记录状态不可为空；不修改时请省略字段")
+        return value
 
 
 class KnowledgePathInput(BaseModel):

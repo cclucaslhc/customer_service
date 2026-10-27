@@ -136,7 +136,7 @@ class StubGateway:
         self.model = model
 
     def snapshot(self) -> ProviderSnapshot:
-        return ProviderSnapshot("offline", "function-model", "unused")
+        return ProviderSnapshot("synthetic", "function-model", "unused")
 
     def build_model(self, _: ProviderSnapshot) -> FunctionModel:
         return self.model

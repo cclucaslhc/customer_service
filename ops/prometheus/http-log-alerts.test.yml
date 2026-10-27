@@ -1,0 +1,85 @@
+rule_files:
+  - http-log-alerts.yml
+evaluation_interval: 1m
+tests:
+  - name: healthy export stays quiet
+    interval: 1m
+    input_series:
+      - series: up{job="customer-service-private",instance="healthy"}
+        values: 1+0x10
+      - series: customer_service_http_log_export_worker_alive{job="customer-service-private",instance="healthy"}
+        values: 1+0x10
+      - series: customer_service_http_log_records_total{job="customer-service-private",instance="healthy",outcome="dropped"}
+        values: 0+0x10
+      - series: customer_service_http_log_queue_depth{job="customer-service-private",instance="healthy"}
+        values: 0+0x10
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: CustomerServiceHttpLogPipelineUnavailable
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: CustomerServiceHttpLogLoss
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: CustomerServiceHttpLogBacklog
+        exp_alerts: []
+  - name: missing worker and stopped worker fail closed
+    interval: 1m
+    input_series:
+      - series: up{job="customer-service-private",instance="missing"}
+        values: 1+0x10
+      - series: up{job="customer-service-private",instance="stopped"}
+        values: 1+0x10
+      - series: customer_service_http_log_export_worker_alive{job="customer-service-private",instance="stopped"}
+        values: 0+0x10
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: CustomerServiceHttpLogPipelineUnavailable
+        exp_alerts:
+          - exp_labels:
+              job: customer-service-private
+              instance: missing
+              severity: critical
+              owner: platform-oncall
+            exp_annotations:
+              summary: Private HTTP log delivery is unavailable or not configured
+              runbook: docs/observability.md
+          - exp_labels:
+              job: customer-service-private
+              instance: stopped
+              severity: critical
+              owner: platform-oncall
+            exp_annotations:
+              summary: Private HTTP log delivery is unavailable or not configured
+              runbook: docs/observability.md
+  - name: dropped records and persistent backlog alert
+    interval: 1m
+    input_series:
+      - series: customer_service_http_log_records_total{job="customer-service-private",instance="synthetic",outcome="dropped"}
+        values: 0 0 1+0x9
+      - series: customer_service_http_log_queue_depth{job="customer-service-private",instance="synthetic"}
+        values: 1+0x10
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: CustomerServiceHttpLogLoss
+        exp_alerts:
+          - exp_labels:
+              job: customer-service-private
+              instance: synthetic
+              outcome: dropped
+              severity: critical
+              owner: platform-oncall
+            exp_annotations:
+              summary: Bounded HTTP log delivery lost or rejected records
+              runbook: docs/observability.md
+      - eval_time: 7m
+        alertname: CustomerServiceHttpLogBacklog
+        exp_alerts:
+          - exp_labels:
+              job: customer-service-private
+              instance: synthetic
+              severity: warning
+              owner: platform-oncall
+            exp_annotations:
+              summary: HTTP log export queue has remained nonempty
+              runbook: docs/observability.md

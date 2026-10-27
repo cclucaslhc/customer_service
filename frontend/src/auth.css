@@ -1,0 +1,5 @@
+.auth-screen{min-height:100vh;display:grid;place-items:center;background:#f4f6fa;padding:24px;color:#203047}
+.auth-card{width:min(420px,100%);display:grid;gap:18px;padding:32px;background:white;border:1px solid #dce2eb;border-radius:18px;box-shadow:0 12px 48px #172c4510}
+.auth-card h1,.auth-card p{margin:0}.auth-card p{line-height:1.65;color:#64748b}.auth-card label{display:grid;gap:8px}.auth-card input{padding:12px;border:1px solid #cbd5e1;border-radius:8px;width:100%;box-sizing:border-box}
+.auth-card button,.auth-bar button{padding:10px 18px;border:0;border-radius:8px;background:#245fe2;color:white;cursor:pointer}.auth-card button:disabled,.auth-bar button:disabled{opacity:.5;cursor:wait}
+.auth-card [role=alert],.auth-bar [role=alert]{color:#b42318}.auth-bar{display:flex;justify-content:flex-end;align-items:center;gap:18px;padding:8px 24px;background:#fff;border-bottom:1px solid #e2e8f0}

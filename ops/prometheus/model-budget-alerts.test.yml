@@ -1,0 +1,108 @@
+rule_files:
+  - model-budget-alerts.yml
+evaluation_interval: 1m
+tests:
+  - name: healthy collection and no new budget event stays quiet
+    interval: 1m
+    input_series:
+      - series: customer_service_model_budget_collection_success{job="customer-service-private",instance="synthetic"}
+        values: 1+0x10
+      - series: customer_service_model_budget_collection_timestamp_seconds{job="customer-service-private",instance="synthetic"}
+        values: 0+60x10
+      - series: customer_service_model_budget_soft_threshold_events_total{job="customer-service-private",instance="synthetic",scope="tenant"}
+        values: 0+0x10
+      - series: customer_service_model_budget_rejections_total{job="customer-service-private",instance="synthetic",reason="exceeded"}
+        values: 0+0x10
+      - series: customer_service_model_budget_unresolved_tenants{job="customer-service-private",instance="synthetic"}
+        values: 0+0x10
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: CustomerServiceModelBudgetCollectionUnavailable
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: CustomerServiceModelBudgetSoftThreshold
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: CustomerServiceModelBudgetRejected
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: CustomerServiceModelBudgetUnresolvedEvidence
+        exp_alerts: []
+  - name: new run threshold event alerts with only bounded scope label
+    interval: 1m
+    input_series:
+      - series: customer_service_model_budget_soft_threshold_events_total{job="customer-service-private",instance="synthetic",scope="run"}
+        values: 0 0 0 1+0x7
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: CustomerServiceModelBudgetSoftThreshold
+        exp_alerts:
+          - exp_labels:
+              job: customer-service-private
+              instance: synthetic
+              scope: run
+              severity: warning
+              owner: service-oncall
+            exp_annotations:
+              summary: A tenant, UTC day or Run crossed its configured model budget soft threshold
+              runbook: docs/model-budget-operations.md
+  - name: hard refusal and unresolved evidence alert
+    interval: 1m
+    input_series:
+      - series: customer_service_model_budget_rejections_total{job="customer-service-private",instance="synthetic",reason="unavailable"}
+        values: 0 0 1+0x8
+      - series: customer_service_model_budget_unresolved_tenants{job="customer-service-private",instance="synthetic"}
+        values: 1+0x10
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: CustomerServiceModelBudgetRejected
+        exp_alerts:
+          - exp_labels:
+              job: customer-service-private
+              instance: synthetic
+              reason: unavailable
+              severity: critical
+              owner: service-oncall
+            exp_annotations:
+              summary: A model request was rejected by hard budget or conservative accounting controls
+              runbook: docs/model-budget-operations.md
+      - eval_time: 6m
+        alertname: CustomerServiceModelBudgetUnresolvedEvidence
+        exp_alerts:
+          - exp_labels:
+              job: customer-service-private
+              instance: synthetic
+              severity: critical
+              owner: finance-oncall
+            exp_annotations:
+              summary: Unreserved model attempts lack complete estimates and block protected tenants
+              runbook: docs/model-budget-operations.md
+  - name: stale successful sample and a down peer both alert
+    interval: 1m
+    input_series:
+      - series: up{job="customer-service-private",instance="down-synthetic"}
+        values: 0+0x10
+      - series: customer_service_model_budget_collection_success{job="customer-service-private",instance="stale-synthetic"}
+        values: 1+0x10
+      - series: customer_service_model_budget_collection_timestamp_seconds{job="customer-service-private",instance="stale-synthetic"}
+        values: 0+0x10
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: CustomerServiceModelBudgetCollectionUnavailable
+        exp_alerts:
+          - exp_labels:
+              job: customer-service-private
+              instance: down-synthetic
+              severity: critical
+              owner: platform-oncall
+            exp_annotations:
+              summary: Model budget evidence collection is missing, failed or stale
+              runbook: docs/model-budget-operations.md
+          - exp_labels:
+              job: customer-service-private
+              instance: stale-synthetic
+              severity: critical
+              owner: platform-oncall
+            exp_annotations:
+              summary: Model budget evidence collection is missing, failed or stale
+              runbook: docs/model-budget-operations.md

@@ -124,6 +124,7 @@ async def test_concurrency_bulkhead_rejects_excess_work_and_recovers_capacity() 
 @pytest.mark.asyncio
 async def test_slow_provider_emits_heartbeats_then_times_out_cleanly() -> None:
     async def stalled_model(_, __):
+        yield "尚未完成的回答"
         await asyncio.sleep(1)
         yield "不会到达这里"
 
@@ -137,7 +138,10 @@ async def test_slow_provider_emits_heartbeats_then_times_out_cleanly() -> None:
     )
     frames = await collect(orchestrator, "timeout-session")
 
-    assert "ping" in [frame["event"] for frame in frames]
+    events = [frame["event"] for frame in frames]
+    assert "ping" in events
+    assert "token" in events
+    assert events[-2:] == ["answer_reset", "error"]
     assert frames[-1]["event"] == "error"
     assert frames[-1]["data"]["code"] == "model_timeout"
     with connect() as db:

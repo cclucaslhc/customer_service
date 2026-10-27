@@ -63,7 +63,9 @@ def _get_ocr_engine() -> RapidOCR:
     global _ocr_engine
     with _ocr_lock:
         if _ocr_engine is None:
-            _ocr_engine = RapidOCR()
+            # Automatic ONNX thread pools reserve memory per host CPU. Keep
+            # per-parser inference bounded when multiple Workers share a host.
+            _ocr_engine = RapidOCR(intra_op_num_threads=1, inter_op_num_threads=1)
     return _ocr_engine
 
 

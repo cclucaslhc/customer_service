@@ -1,0 +1,56 @@
+# Disposable local integration infrastructure only, no application/production volumes.
+name: customer-service-integration
+services:
+  postgres-roles:
+    # Role-boundary tests must never share the normal integration cluster.
+    image: pgvector/pgvector@sha256:a36250871de0833b8757561c72f2477ef1ddd1101afa4e617fb552e0de514c6b
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: integration
+      POSTGRES_PASSWORD: local-integration-only
+    ports:
+      - "[::1]:55433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U integration -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    tmpfs:
+      - /var/lib/postgresql/data
+  s3:
+    # Isolated test credentials only; never reuse another project's MinIO.
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    command: ["server", "/data", "--console-address", "127.0.0.1:9001"]
+    environment:
+      MINIO_ROOT_USER: synthetic-s3-access
+      MINIO_ROOT_PASSWORD: synthetic-s3-secret-only
+    ports:
+      - "127.0.0.1:59000:9000"
+    tmpfs:
+      - /data
+  postgres:
+    # PostgreSQL 16 with pgvector required by migration 0028; fixed digest.
+    image: pgvector/pgvector@sha256:a36250871de0833b8757561c72f2477ef1ddd1101afa4e617fb552e0de514c6b
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: integration
+      POSTGRES_PASSWORD: local-integration-only
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U integration -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    tmpfs:
+      - /var/lib/postgresql/data
+  redis:
+    image: redis:7.4.6-bookworm@sha256:a9cc41d6d01da2aa26c219e4f99ecbeead955a7b656c1c499cce8922311b2514
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1:56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12

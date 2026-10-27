@@ -1,0 +1,35 @@
+# Configure only on the authenticated private metrics target and a tested receiver.
+groups:
+  - name: customer-service-model-circuit
+    interval: 30s
+    rules:
+      - alert: CustomerServiceModelCircuitCollectionUnavailable
+        expr: >-
+          up{job="customer-service-private"} == 0
+          or absent(customer_service_model_circuit_collection_success{job="customer-service-private"})
+          or customer_service_model_circuit_collection_success{job="customer-service-private"} == 0
+          or (time() - customer_service_model_circuit_collection_timestamp_seconds{job="customer-service-private"}) > 300
+        for: 2m
+        labels:
+          severity: critical
+          owner: platform-oncall
+        annotations:
+          summary: Model circuit evidence collection is missing, failed or stale
+          runbook: docs/model-circuit-operations.md
+      - alert: CustomerServiceModelCircuitOpened
+        expr: increase(customer_service_model_circuit_openings_total{job="customer-service-private"}[5m]) > 0
+        labels:
+          severity: warning
+          owner: service-oncall
+        annotations:
+          summary: One or more tenant-model circuits opened or reopened
+          runbook: docs/model-circuit-operations.md
+      - alert: CustomerServiceModelCircuitProbeStuck
+        expr: customer_service_model_circuit_states{job="customer-service-private",state="half_open"} > 0
+        for: 5m
+        labels:
+          severity: warning
+          owner: service-oncall
+        annotations:
+          summary: A shared model circuit has remained half-open
+          runbook: docs/model-circuit-operations.md

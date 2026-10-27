@@ -1,27 +1,51 @@
 import os
+import threading
+import uuid
+from pathlib import Path
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from app.settings import MASTER_KEY_PATH, ensure_directories
+from app.settings import MASTER_KEY_PATH
 
 
 class SecretStore:
-    def __init__(self) -> None:
-        ensure_directories()
-        if not MASTER_KEY_PATH.exists():
-            MASTER_KEY_PATH.write_bytes(AESGCM.generate_key(bit_length=256))
-            try:
-                os.chmod(MASTER_KEY_PATH, 0o600)
-            except OSError:
-                pass
-        self._key = MASTER_KEY_PATH.read_bytes()
-        if len(self._key) != 32:
-            raise RuntimeError("主密钥文件格式无效")
+    def __init__(self, *, path: Path | None = None) -> None:
+        # Importing/constructing the application must not read local secrets.
+        self._path = path
+        self._cached_path = None
+        self._key = None
+        self._lock = threading.RLock()
 
-    def encrypt(self, plaintext: str, provider: str) -> tuple[bytes, bytes]:
+    @property
+    def path(self):
+        return self._path or MASTER_KEY_PATH
+
+    def _get_key(self, *, create=False):
+        with self._lock:
+            path = self.path.resolve()
+            if self._key is None or self._cached_path != path:
+                if create and not path.exists():
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        with path.open("xb") as file:
+                            file.write(AESGCM.generate_key(bit_length=256))
+                        os.chmod(path, 0o600)
+                    except FileExistsError:
+                        pass  # Another process provisioned the same master key.
+                key = path.read_bytes()
+                if len(key) != 32:
+                    raise RuntimeError("主密钥文件格式无效")
+                self._key, self._cached_path = key, path
+            return self._key
+
+    @staticmethod
+    def _aad(provider, tenant_id):
+        return provider.encode() if tenant_id is None else f"cs-provider:v1:{uuid.UUID(str(tenant_id))}:{provider}".encode()
+
+    def encrypt(self, plaintext: str, provider: str, *, tenant_id=None) -> tuple[bytes, bytes]:
         nonce = os.urandom(12)
-        ciphertext = AESGCM(self._key).encrypt(nonce, plaintext.encode(), provider.encode())
+        ciphertext = AESGCM(self._get_key(create=True)).encrypt(nonce, plaintext.encode(), self._aad(provider, tenant_id))
         return ciphertext, nonce
 
-    def decrypt(self, ciphertext: bytes, nonce: bytes, provider: str) -> str:
-        return AESGCM(self._key).decrypt(nonce, ciphertext, provider.encode()).decode()
+    def decrypt(self, ciphertext: bytes, nonce: bytes, provider: str, *, tenant_id=None) -> str:
+        return AESGCM(self._get_key()).decrypt(nonce, ciphertext, self._aad(provider, tenant_id)).decode()

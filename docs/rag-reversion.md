@@ -1,0 +1,13 @@
+# 成功发布后的受控回退
+
+`RagRolloutService.rollback`仅撤回未完成灰度；成功发布不能用它恢复已消费审批，也不能把retired索引原ID直接改回active，否则可能让旧run路由重新匹配。
+
+`prepare_reversion`是owner内部候选准备事务：要求completed rollout与executed release的显式版本/摘要回执，当前active仍为该release候选，previous仍retired；在排他发布锁内重算previous的当前文档manifest并要求等于原封存摘要。当前文档删除、版本变化、向量缺失等不能靠旧索引绕过。失败须重建并重新评测，不恢复旧文档内容。
+
+成功创建新的ready index UUID，沿用previous的已校验profile及检索版本，原previous保持retired、当前active保持不变；候选插入和`rag.index.reversion_prepare`审计同事务。准备不授权发布，不改变原completed rollout、不恢复旧审批。参数为tenant_id、rollout_id、expected_rollout_version、expected_plan_sha256、expected_release_version、expected_body_sha256、new_index_id。
+
+后续必须针对新index与manifest形成独立、可信的新质量证据及当前model/Prompt/dataset binding，再创建新release，由两名有效指定管理员重新批准后，通过现有execute（无灰度计划）或新灰度流程发布。不得简单改写旧质量报告的索引ID当作真实复测证据。运行时已有共享发布锁和持久化路由比较，切回新UUID后旧active上的在途答案提交被拒绝。
+
+这是内部回退准备与复用审批路径，不是紧急自动回切、可信HTTP管理入口或正式上线验收。真实业务质量、模型费用与双机故障仍缺；完整加密备份恢复及匹配当前schema的新镜像也待补验。测试使用合成质量报告仅验证控制事务，不证明旧版本业务质量仍适用。
+
+2026-10-26隔离真实PG专项5 passed（23.98秒）：新UUID但不激活、审计失败回滚、未完成灰度拒绝、manifest变化拒绝，以及新release双人审批后实际切回并拒绝旧active的在途答案（KnowledgeIndexChanged）。无服务完整后端446 passed/366 skipped（26.95秒），条件跳过不算通过；各组不累加。CI真实PG组已加入此专项，托管CI未在本机实际执行；专用回环PG容器已清理。

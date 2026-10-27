@@ -1,0 +1,37 @@
+# Deploy only after each private metrics target has an explicit bounded log sink.
+groups:
+  - name: customer-service-http-logs
+    interval: 30s
+    rules:
+      - alert: CustomerServiceHttpLogPipelineUnavailable
+        expr: >-
+          up{job="customer-service-private"} == 0
+          or (up{job="customer-service-private"} == 1 unless on(job,instance)
+              customer_service_http_log_export_worker_alive{job="customer-service-private"})
+          or customer_service_http_log_export_worker_alive{job="customer-service-private"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          owner: platform-oncall
+        annotations:
+          summary: Private HTTP log delivery is unavailable or not configured
+          runbook: docs/observability.md
+      - alert: CustomerServiceHttpLogLoss
+        expr: >-
+          increase(customer_service_http_log_records_total{job="customer-service-private",outcome=~"dropped|failed|rejected"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          owner: platform-oncall
+        annotations:
+          summary: Bounded HTTP log delivery lost or rejected records
+          runbook: docs/observability.md
+      - alert: CustomerServiceHttpLogBacklog
+        expr: customer_service_http_log_queue_depth{job="customer-service-private"} > 0
+        for: 5m
+        labels:
+          severity: warning
+          owner: platform-oncall
+        annotations:
+          summary: HTTP log export queue has remained nonempty
+          runbook: docs/observability.md

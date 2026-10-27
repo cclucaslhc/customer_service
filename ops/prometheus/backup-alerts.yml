@@ -1,0 +1,51 @@
+# Opt-in target job name; deploy with an isolated test receiver before production.
+groups:
+  - name: customer-service-backup
+    interval: 30s
+    rules:
+      - alert: CustomerServiceBackupCollectionUnavailable
+        expr: >-
+          up{job="customer-service-backup"} == 0
+          or absent(cs_backup_catalog_collection_success{job="customer-service-backup"})
+          or cs_backup_catalog_collection_success{job="customer-service-backup"} == 0
+          or (time() - cs_backup_collection_timestamp_seconds{job="customer-service-backup"}) > 300
+        for: 2m
+        labels:
+          severity: critical
+          owner: platform-oncall
+        annotations:
+          summary: Backup catalog monitoring is missing, failed or stale
+          runbook: docs/backup-scheduler-operations.md
+      - alert: CustomerServiceBackupVerificationStale
+        expr: >-
+          (cs_backup_verification_required{job="customer-service-backup"} == 1)
+          and on(job, instance, kind)
+          ((time() - cs_backup_verified_snapshot_timestamp_seconds{job="customer-service-backup"})
+          > on(job, instance) group_left cs_backup_max_age_seconds{job="customer-service-backup"})
+        for: 2m
+        labels:
+          severity: critical
+          owner: platform-oncall
+        annotations:
+          summary: Required backup verification recovery point is too old or absent
+          runbook: docs/backup-scheduler-operations.md
+      - alert: CustomerServiceBackupNeedsReview
+        expr: >-
+          cs_backup_jobs_needs_review{job="customer-service-backup"} > 0
+          or cs_backup_jobs_expired{job="customer-service-backup"} > 0
+        for: 1m
+        labels:
+          severity: critical
+          owner: platform-oncall
+        annotations:
+          summary: Backup execution has failed or lost its lease; do not replay automatically
+          runbook: docs/backup-scheduler-operations.md
+      - alert: CustomerServiceBackupProtectionUnhealthy
+        expr: cs_backup_health{job="customer-service-backup"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          owner: platform-oncall
+        annotations:
+          summary: Approved backup policy, schedule, verification or recovery hold is unhealthy
+          runbook: docs/backup-scheduler-operations.md

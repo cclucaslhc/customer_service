@@ -1,0 +1,143 @@
+rule_files:
+  - backup-alerts.yml
+evaluation_interval: 1m
+tests:
+  - name: continuously fresh local and restore evidence stays quiet
+    interval: 1m
+    input_series:
+      - series: cs_backup_catalog_collection_success{job="customer-service-backup",instance="synthetic"}
+        values: 1+0x10
+      - series: cs_backup_collection_timestamp_seconds{job="customer-service-backup",instance="synthetic"}
+        values: 0+60x10
+      - series: cs_backup_max_age_seconds{job="customer-service-backup",instance="synthetic"}
+        values: 60+0x10
+      - series: cs_backup_verification_required{job="customer-service-backup",instance="synthetic",kind="local"}
+        values: 1+0x10
+      - series: cs_backup_verification_required{job="customer-service-backup",instance="synthetic",kind="restore"}
+        values: 1+0x10
+      - series: cs_backup_verified_snapshot_timestamp_seconds{job="customer-service-backup",instance="synthetic",kind="local"}
+        values: 0+60x10
+      - series: cs_backup_verified_snapshot_timestamp_seconds{job="customer-service-backup",instance="synthetic",kind="restore"}
+        values: 0+60x10
+      - series: cs_backup_health{job="customer-service-backup",instance="synthetic"}
+        values: 1+0x10
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: CustomerServiceBackupCollectionUnavailable
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: CustomerServiceBackupVerificationStale
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: CustomerServiceBackupNeedsReview
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: CustomerServiceBackupProtectionUnhealthy
+        exp_alerts: []
+  - name: local success cannot mask stale required restore
+    interval: 1m
+    input_series:
+      - series: cs_backup_catalog_collection_success{job="customer-service-backup",instance="synthetic"}
+        values: 1+0x10
+      - series: cs_backup_collection_timestamp_seconds{job="customer-service-backup",instance="synthetic"}
+        values: 0+60x10
+      - series: cs_backup_max_age_seconds{job="customer-service-backup",instance="synthetic"}
+        values: 60+0x10
+      - series: cs_backup_verification_required{job="customer-service-backup",instance="synthetic",kind="local"}
+        values: 1+0x10
+      - series: cs_backup_verification_required{job="customer-service-backup",instance="synthetic",kind="restore"}
+        values: 1+0x10
+      - series: cs_backup_verified_snapshot_timestamp_seconds{job="customer-service-backup",instance="synthetic",kind="local"}
+        values: 0+60x10
+      - series: cs_backup_verified_snapshot_timestamp_seconds{job="customer-service-backup",instance="synthetic",kind="restore"}
+        values: 0+0x10
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: CustomerServiceBackupVerificationStale
+        exp_alerts:
+          - exp_labels:
+              job: customer-service-backup
+              instance: synthetic
+              kind: restore
+              severity: critical
+              owner: platform-oncall
+            exp_annotations:
+              summary: Required backup verification recovery point is too old or absent
+              runbook: docs/backup-scheduler-operations.md
+  - name: failed collection alerts without a synthetic healthy record
+    interval: 1m
+    input_series:
+      - series: cs_backup_catalog_collection_success{job="customer-service-backup",instance="synthetic"}
+        values: 0+0x10
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: CustomerServiceBackupCollectionUnavailable
+        exp_alerts:
+          - exp_labels:
+              job: customer-service-backup
+              instance: synthetic
+              severity: critical
+              owner: platform-oncall
+            exp_annotations:
+              summary: Backup catalog monitoring is missing, failed or stale
+              runbook: docs/backup-scheduler-operations.md
+  - name: expired worker alerts then recovers without replaying operation
+    interval: 1m
+    input_series:
+      - series: cs_backup_jobs_expired{job="customer-service-backup",instance="synthetic"}
+        values: 1+0x3 0+0x6
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: CustomerServiceBackupNeedsReview
+        exp_alerts:
+          - exp_labels:
+              job: customer-service-backup
+              instance: synthetic
+              severity: critical
+              owner: platform-oncall
+            exp_annotations:
+              summary: Backup execution has failed or lost its lease; do not replay automatically
+              runbook: docs/backup-scheduler-operations.md
+      - eval_time: 6m
+        alertname: CustomerServiceBackupNeedsReview
+        exp_alerts: []
+  - name: exporter stopped but stale success file remains
+    interval: 1m
+    input_series:
+      - series: cs_backup_catalog_collection_success{job="customer-service-backup",instance="synthetic"}
+        values: 1+0x12
+      - series: cs_backup_collection_timestamp_seconds{job="customer-service-backup",instance="synthetic"}
+        values: 0+0x12
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: CustomerServiceBackupCollectionUnavailable
+        exp_alerts:
+          - exp_labels:
+              job: customer-service-backup
+              instance: synthetic
+              severity: critical
+              owner: platform-oncall
+            exp_annotations:
+              summary: Backup catalog monitoring is missing, failed or stale
+              runbook: docs/backup-scheduler-operations.md
+  - name: one down target is not masked by another healthy target
+    interval: 1m
+    input_series:
+      - series: up{job="customer-service-backup",instance="down-synthetic"}
+        values: 0+0x10
+      - series: cs_backup_catalog_collection_success{job="customer-service-backup",instance="healthy-synthetic"}
+        values: 1+0x10
+      - series: cs_backup_collection_timestamp_seconds{job="customer-service-backup",instance="healthy-synthetic"}
+        values: 0+60x10
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: CustomerServiceBackupCollectionUnavailable
+        exp_alerts:
+          - exp_labels:
+              job: customer-service-backup
+              instance: down-synthetic
+              severity: critical
+              owner: platform-oncall
+            exp_annotations:
+              summary: Backup catalog monitoring is missing, failed or stale
+              runbook: docs/backup-scheduler-operations.md

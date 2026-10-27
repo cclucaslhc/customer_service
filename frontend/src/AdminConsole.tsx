@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api } from "./api";
 import MarkdownContent from "./MarkdownContent";
+import { recentKnowledgeJob, isKnowledgeJob, type KnowledgeJob } from "./knowledge-jobs";
 import {
   adminPath,
   adminRouteFromPath,
@@ -8,6 +9,7 @@ import {
   type AdminModule,
 } from "./session";
 import "./admin.css";
+import StorageSettings from './StorageSettings';
 
 type ModuleKey = AdminModule;
 type Paged<T> = { items: T[]; total: number; page: number; page_size: number };
@@ -86,12 +88,23 @@ type PromptBundle = {
   versions: PromptVersion[];
 };
 type Provider = {
-  provider: "deepseek" | "openai";
+  provider: "deepseek" | "openai" | "local";
   model: string;
   configured: boolean;
   last_test_status?: string;
   last_test_message?: string;
 };
+type BudgetStatus = {
+  enabled: boolean;
+  policy?: { version: number; provider: "deepseek" | "openai" | "local"; model: string; currency: "CNY" | "USD";
+    tenant_limit: string; day_limit: string; run_limit: string; input_token_ceiling: number;
+    output_token_limit: number; max_run_requests: number; soft_percent: number; published_at: string };
+  usage?: { tenant_amount: string | null; day_amount: string | null; tenant_remaining?: string | null; day_remaining?: string | null; unresolved: boolean };
+  soft_events: { tenant: number; day: number; run: number };
+};
+type ModelPrice = { provider: string; model: string; version: number; currency: "CNY" | "USD";
+  input_rate: string; output_rate: string; cache_read_rate: string; cache_write_rate: string;
+  source_sha256: string; published_at: string };
 type DocumentRow = {
   id: string;
   display_name: string;
@@ -108,20 +121,8 @@ type DocumentRow = {
   metadata?: Record<string, unknown>;
   created_at: string;
 };
-type KnowledgeImportIssue = { path: string; display_name: string; reason: string };
-type KnowledgeJob = {
-  id: string;
-  status: "pending" | "running" | "complete" | "partial" | "failed";
-  stage: string;
-  total_count: number;
-  processed_count: number;
-  imported_count: number;
-  skipped_count: number;
-  failed_count: number;
-  current_file?: string;
-  error_message?: string;
-  result?: { skipped?: KnowledgeImportIssue[]; failed?: KnowledgeImportIssue[] };
-};
+type ModelRouteBudget = { route_policy_id: string; provider: string; model: string; version: number;
+  currency: "CNY" | "USD"; input_token_ceiling: number; output_token_limit: number; source_sha256: string };
 type AuditRow = {
   id: string;
   action: string;
@@ -212,8 +213,10 @@ function routeState() {
   return adminRouteFromPath(window.location.pathname);
 }
 
-export default function AdminConsole() {
-  const initial = routeState();
+export default function AdminConsole({ role }: { role?: 'customer' | 'support' | 'admin' }) {
+  const available = modules.filter(item => role !== 'support' || ['overview', 'sessions', 'contacts'].includes(item.key));
+  const readRoute = () => { const route = routeState(); return available.some(item => item.key === route.module) ? route : { module: 'overview' as ModuleKey, entityId: '' }; };
+  const initial = readRoute();
   const [module, setModule] = useState<ModuleKey>(initial.module);
   const [entityId, setEntityId] = useState(initial.entityId);
   const [notice, setNotice] = useState("");
@@ -227,7 +230,7 @@ export default function AdminConsole() {
   };
   useEffect(() => {
     const restore = () => {
-      const state = routeState();
+      const state = readRoute();
       setModule(state.module);
       setEntityId(state.entityId);
     };
@@ -239,9 +242,9 @@ export default function AdminConsole() {
       <aside className="admin-nav">
         <div className="admin-nav-head">
           <strong>企业管理中心</strong>
-          <small>仅限本机访问 · 完整数据模式</small>
+          <small>{role ? '已认证 · 租户隔离模式' : '仅限本机访问 · 完整数据模式'}</small>
         </div>
-        {modules.map((item) => (
+        {available.map((item) => (
           <button
             className={module === item.key ? "active" : ""}
             key={item.key}
@@ -260,7 +263,7 @@ export default function AdminConsole() {
             <p>{meta.description}</p>
           </div>
           <div className="local-warning">
-            ⚠ 未启用登录，仅允许 127.0.0.1 本机访问
+            {role ? '已启用登录 · 操作仍由后端权限校验' : '⚠ 未启用登录，仅允许 127.0.0.1 本机访问'}
           </div>
         </header>
         {notice && <div className="admin-notice">{notice}</div>}
@@ -276,7 +279,7 @@ export default function AdminConsole() {
           />
         )}
         {module === "prompts" && <PromptsPage setNotice={setNotice} />}
-        {module === "knowledge" && <KnowledgePage setNotice={setNotice} />}
+        {module === "knowledge" && <><StorageSettings /><KnowledgePage setNotice={setNotice} /></>}
         {module === "models" && <ModelsPage setNotice={setNotice} />}
         {module === "contacts" && (
           <ContactsPage
@@ -1022,6 +1025,8 @@ function KnowledgePage({ setNotice }: { setNotice: (text: string) => void }) {
     { path: string; display_name: string; reason: string; kind: "跳过" | "失败" }[]
   >([]);
   const [importJob, setImportJob] = useState<KnowledgeJob | null>(null);
+  const importSubmitted = useRef(false);
+  const queuedJobIds = useRef<string[]>([]);
   const [detail, setDetail] = useState<{
     document: DocumentRow;
     chunks: {
@@ -1043,43 +1048,84 @@ function KnowledgePage({ setNotice }: { setNotice: (text: string) => void }) {
     const terms = await api<{ custom: string[][] }>("/api/admin/knowledge/terms");
     setTermsText(terms.custom.map((group) => group.join(" = ")).join("\n"));
   };
+  const showJob = (job: KnowledgeJob) => {
+    setImportJob(job);
+    setImportIssues([
+      ...(job.result?.skipped || []).map((item) => ({ ...item, kind: "跳过" as const })),
+      ...(job.result?.failed || []).map((item) => ({ ...item, kind: "失败" as const })),
+    ]);
+  };
+  const trackJob = (job: KnowledgeJob) => {
+    importSubmitted.current = true;
+    if (!queuedJobIds.current.includes(job.id)) queuedJobIds.current.push(job.id);
+    setImportJob(current => current && ['pending', 'running'].includes(current.status) ? current : job);
+  };
   useEffect(() => {
-    void load();
+    let active = true;
+    void load().catch(() => { if (active) setNotice("知识库加载失败，请刷新重试"); });
+    void api<KnowledgeJob[]>("/api/admin/knowledge/jobs?limit=20").then((jobs) => {
+      if (!active) return;
+      const job = recentKnowledgeJob(jobs);
+      // A user-created job must not be replaced by a late restoration response.
+      if (job && !importSubmitted.current) showJob(job);
+    }).catch(() => { if (active) setNotice("导入任务恢复失败，请刷新重试"); });
+    return () => { active = false; };
   }, []);
   useEffect(() => {
     if (!importJob || !["pending", "running"].includes(importJob.status)) return;
-    const timer = window.setInterval(async () => {
-      const job = await api<KnowledgeJob>(`/api/admin/knowledge/jobs/${importJob.id}`);
-      setImportJob(job);
-      if (!["pending", "running"].includes(job.status)) {
-        const skipped = job.result?.skipped || [];
-        const failed = job.result?.failed || [];
-        setImportIssues([
-          ...skipped.map((item) => ({ ...item, kind: "跳过" as const })),
-          ...failed.map((item) => ({ ...item, kind: "失败" as const })),
-        ]);
-        setNotice(`导入 ${job.imported_count}，跳过 ${job.skipped_count}，失败 ${job.failed_count}`);
-        await load();
+    let active = true;
+    let timer: number | undefined;
+    const poll = async () => {
+      let delay = 500;
+      try {
+        const job = await api<KnowledgeJob>(`/api/admin/knowledge/jobs/${importJob.id}`);
+        if (!active) return;
+        if (!["pending", "running"].includes(job.status)) {
+          setNotice(`${job.status === 'cancelled' ? '任务已取消；' : ''}导入 ${job.imported_count}，跳过 ${job.skipped_count}，失败 ${job.failed_count}`);
+          await load();
+          queuedJobIds.current = queuedJobIds.current.filter(id => id !== job.id);
+          let next: KnowledgeJob | undefined;
+          while (queuedJobIds.current.length) {
+            const candidate = await api<KnowledgeJob>(`/api/admin/knowledge/jobs/${queuedJobIds.current[0]}`);
+            if (['pending', 'running'].includes(candidate.status)) { next = candidate; break; }
+            queuedJobIds.current.shift();
+          }
+          if (!next) next = (await api<KnowledgeJob[]>('/api/admin/knowledge/jobs?limit=100'))
+            .find(candidate => ['pending', 'running'].includes(candidate.status));
+          if (!active) return;
+          showJob(next || job);
+          return;
+        }
+        showJob(job);
+      } catch {
+        if (!active) return;
+        delay = 2000;
+        setNotice("导入进度暂时不可用，正在重试；请勿重复提交");
       }
-    }, 500);
-    return () => window.clearInterval(timer);
+      if (active) timer = window.setTimeout(() => void poll(), delay);
+    };
+    timer = window.setTimeout(() => void poll(), 500);
+    return () => { active = false; window.clearTimeout(timer); };
   }, [importJob?.id, importJob?.status]);
   const importPath = async () => {
+    importSubmitted.current = true;
     const job = await api<KnowledgeJob>(
       "/api/admin/knowledge/jobs",
       jsonRequest("POST", { path, recursive: true }),
     );
     setImportIssues([]);
-    setImportJob(job);
+    trackJob(job);
     setNotice("导入任务已创建，可继续使用管理界面");
   };
   const upload = async (files: File[]) => {
+    let queued = 0;
     for (const file of files) {
       const body = new FormData();
       body.append("file", file);
-      await api("/api/admin/documents", { method: "POST", body });
+      const result = await api<unknown>("/api/admin/documents", { method: "POST", body });
+      if (isKnowledgeJob(result)) { trackJob(result); queued += 1; }
     }
-    setNotice(`已上传 ${files.length} 个文档`);
+    setNotice(queued ? `已接收 ${queued} 个文档，正在后台解析` : `已上传 ${files.length} 个文档`);
     await load();
   };
   const search = async () => {
@@ -1152,6 +1198,15 @@ function KnowledgePage({ setNotice }: { setNotice: (text: string) => void }) {
             <progress value={importJob.processed_count} max={Math.max(importJob.total_count, 1)} />
             {importJob.current_file && <small>{importJob.current_file}</small>}
             {importJob.error_message && <small className="error-text">{importJob.error_message}</small>}
+            {importJob.cancellation_supported && ['pending', 'running'].includes(importJob.status) && (
+              <button onClick={async () => {
+                try {
+                  await api<KnowledgeJob>(`/api/admin/knowledge/jobs/${importJob.id}/cancel`, jsonRequest('POST', {}));
+                  setNotice('取消已提交；已发布内容保留，等待后台解析停止');
+                  // Keep polling so other queued jobs are restored normally.
+                } catch { setNotice('取消未确认，请刷新任务状态后重试'); }
+              }}>取消导入任务</button>
+            )}
           </div>
         )}
         <details className="terms-editor">
@@ -1247,7 +1302,13 @@ function KnowledgePage({ setNotice }: { setNotice: (text: string) => void }) {
               </div>
               <button
                 onClick={async () => {
-                  await api(`/api/admin/documents/${detail.document.id}/reparse`, { method: "POST" });
+                  const result = await api<unknown>(`/api/admin/documents/${detail.document.id}/reparse`, { method: "POST" });
+                  if (isKnowledgeJob(result)) {
+                    trackJob(result);
+                    setDetail(null);
+                    setNotice('重新解析任务已创建，完成后更新文档版本');
+                    return;
+                  }
                   setNotice("已使用当前解析器重新建库");
                   setDetail(await api(`/api/admin/documents/${detail.document.id}`));
                   await load();
@@ -1297,7 +1358,7 @@ function ModelsPage({ setNotice }: { setNotice: (text: string) => void }) {
     <div className="provider-page">
       {providers.map((provider) => (
         <Panel
-          title={provider.provider === "deepseek" ? "DeepSeek" : "OpenAI"}
+          title={provider.provider === "deepseek" ? "DeepSeek" : provider.provider === "local" ? "本机模型" : "OpenAI"}
           key={provider.provider}
         >
           <div className="provider-status">
@@ -1317,7 +1378,7 @@ function ModelsPage({ setNotice }: { setNotice: (text: string) => void }) {
               }
             />
           </label>
-          <label>
+          {provider.provider === "local" ? <p className="muted">每台应用主机须由运维配置仅监听 127.0.0.1 的 OpenAI 兼容服务；此处不填写端点或密钥。</p> : <label>
             API Key（只写，不回显）
             <input
               type="password"
@@ -1330,7 +1391,7 @@ function ModelsPage({ setNotice }: { setNotice: (text: string) => void }) {
                 setKeys({ ...keys, [provider.provider]: e.target.value })
               }
             />
-          </label>
+          </label>}
           <div className="button-row">
             <button
               onClick={async () => {
@@ -1338,7 +1399,7 @@ function ModelsPage({ setNotice }: { setNotice: (text: string) => void }) {
                   `/api/admin/providers/${provider.provider}/test`,
                   jsonRequest("POST", {
                     model: models[provider.provider],
-                    api_key: keys[provider.provider] || null,
+                    api_key: provider.provider === "local" ? null : keys[provider.provider] || null,
                   }),
                 );
                 setNotice(result.message);
@@ -1353,7 +1414,7 @@ function ModelsPage({ setNotice }: { setNotice: (text: string) => void }) {
                   `/api/admin/providers/${provider.provider}`,
                   jsonRequest("PUT", {
                     model: models[provider.provider],
-                    api_key: keys[provider.provider] || null,
+                    api_key: provider.provider === "local" ? null : keys[provider.provider] || null,
                   }),
                 );
                 setKeys({ ...keys, [provider.provider]: "" });
@@ -1383,8 +1444,175 @@ function ModelsPage({ setNotice }: { setNotice: (text: string) => void }) {
           )}
         </Panel>
       ))}
+      <OnlineFallbackConsentPanel configured={providers.some(item => item.provider === "openai" && item.configured)} setNotice={setNotice} />
+      <ModelFinancePanel providers={providers} active={active} models={models} setNotice={setNotice} />
     </div>
   );
+}
+
+type FallbackConsentStatus = { provider: string; enabled: boolean; version: number | null; state: "valid" | "invalid" };
+
+function OnlineFallbackConsentPanel({ configured, setNotice }: {
+  configured: boolean; setNotice: (text: string) => void;
+}) {
+  const [consent, setConsent] = useState<FallbackConsentStatus | null>(null);
+  const [unsupported, setUnsupported] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const load = async () => {
+    try { setConsent(await api<FallbackConsentStatus>("/api/admin/model-fallback/openai")); }
+    catch (failure) {
+      if (failure instanceof ApiError && failure.status === 409) setUnsupported(true);
+      else setNotice(failure instanceof ApiError ? failure.message : "无法读取备用授权状态");
+    }
+  };
+  useEffect(() => { void load(); }, []);
+  const publish = async (enabled: boolean) => {
+    if (!consent || consent.version === null) return;
+    setSaving(true);
+    try {
+      const next = await api<FallbackConsentStatus>("/api/admin/model-fallback/openai",
+        jsonRequest("PUT", { publication_id: crypto.randomUUID(), expected_version: consent.version, enabled }));
+      setConsent({ ...next, state: "valid" });
+      setNotice(enabled ? "已授权 OpenAI 接收故障切换时的用户消息和公司知识片段" : "已撤销 OpenAI 故障切换数据授权");
+    } catch (failure) {
+      setNotice(failure instanceof ApiError ? failure.message : "授权更新失败，请刷新后重试");
+      await load();
+    } finally { setSaving(false); }
+  };
+  return <Panel title="在线备用供应商数据授权">
+    <p className="muted">默认禁止跨在线供应商外发。授权后，未来启用故障切换时，OpenAI 可能接收本轮用户消息及检索到的公司知识片段。当前版本尚未启用自动切换。</p>
+    {unsupported && <p className="muted">此设置仅适用于认证 PostgreSQL 部署；当前本机模式未启用。</p>}
+    <div className="provider-status"><Status value={consent?.enabled ? "configured" : "unconfigured"}/>
+      <span>{consent?.state === "invalid" ? "授权状态异常：禁止外发" : consent?.enabled ? `已授权 · v${consent.version}` : "未授权"}</span></div>
+    <div className="button-row">
+      <button disabled={saving || !configured || !consent || consent.version === null || consent.enabled}
+        onClick={() => void publish(true)}>授权 OpenAI 数据外发</button>
+      <button className="danger" disabled={saving || !consent?.enabled || consent.version === null}
+        onClick={() => void publish(false)}>撤销授权</button>
+    </div>
+    {!configured && <p className="muted">请先为本租户保存 OpenAI 配置，才能授权。</p>}
+  </Panel>;
+}
+
+function ModelFinancePanel({ providers, active, models, setNotice }: {
+  providers: Provider[]; active: string; models: Record<string,string>; setNotice: (text:string) => void;
+}) {
+  const [selected,setSelected] = useState<"deepseek" | "openai" | "local">("deepseek");
+  const selectedModel = models[selected] || providers.find(item => item.provider === selected)?.model || "";
+  const [status,setStatus] = useState<BudgetStatus | null>(null);
+  const [price,setPrice] = useState<ModelPrice | null>(null);
+  const [route,setRoute] = useState<ModelRouteBudget | null>(null);
+  const [routeTokens,setRouteTokens] = useState({input_token_ceiling:"",output_token_limit:""});
+  const [routeSource,setRouteSource] = useState("");
+  const [currency,setCurrency] = useState<"CNY"|"USD">("CNY");
+  const [rates,setRates] = useState({input_rate:"",output_rate:"",cache_read_rate:"",cache_write_rate:""});
+  const [limits,setLimits] = useState({tenant_limit:"",day_limit:"",run_limit:"",input_token_ceiling:"",
+    output_token_limit:"",max_run_requests:"",soft_percent:"80"});
+  const [source,setSource] = useState("");
+  const load = async () => {
+    const budget = await api<BudgetStatus>("/api/admin/model-budget");
+    setStatus(budget);
+    const current = selectedModel ? await api<{price:ModelPrice|null}>(`/api/admin/model-prices/${selected}?model=${encodeURIComponent(selectedModel)}`) : {price:null};
+    setPrice(current.price);
+    setSource(current.price?.source_sha256 || "");
+    const chosen = current.price?.currency || budget.policy?.currency || "CNY";
+    setCurrency(chosen);
+    setRates(current.price ? {input_rate:current.price.input_rate,output_rate:current.price.output_rate,
+      cache_read_rate:current.price.cache_read_rate,cache_write_rate:current.price.cache_write_rate} :
+      {input_rate:"",output_rate:"",cache_read_rate:"",cache_write_rate:""});
+    if (budget.policy) setLimits({tenant_limit:budget.policy.tenant_limit,day_limit:budget.policy.day_limit,
+      run_limit:budget.policy.run_limit,input_token_ceiling:String(budget.policy.input_token_ceiling),
+      output_token_limit:String(budget.policy.output_token_limit),max_run_requests:String(budget.policy.max_run_requests),
+      soft_percent:String(budget.policy.soft_percent)});
+    const routePolicy = selectedModel && selected !== active && (selected === "openai" || selected === "local")
+      ? (await api<{policy:ModelRouteBudget|null}>(`/api/admin/model-route-budget/${selected}?model=${encodeURIComponent(selectedModel)}`)).policy
+      : null;
+    setRoute(routePolicy);
+    setRouteTokens({input_token_ceiling:String(routePolicy?.input_token_ceiling ?? budget.policy?.input_token_ceiling ?? ""),
+      output_token_limit:String(routePolicy?.output_token_limit ?? budget.policy?.output_token_limit ?? "")});
+    setRouteSource(routePolicy?.source_sha256 || "");
+  };
+  useEffect(() => { if (active) setSelected(active as "deepseek" | "openai" | "local"); }, [active]);
+  useEffect(() => { void load(); }, [selected,selectedModel]);
+  const integer = (name:keyof typeof limits) => {
+    const value=Number(limits[name]);
+    if (!Number.isSafeInteger(value) || value < 1) throw new ApiError("预算整数参数无效",422);
+    return value;
+  };
+  const validSource = () => {
+    if (!/^[0-9a-f]{64}$/.test(source)) throw new ApiError("请输入价格或预算依据的 64 位小写 SHA-256",422);
+    return source;
+  };
+  const reportFailure = (failure: unknown) => setNotice(failure instanceof ApiError ? failure.message : "预算配置保存失败，请刷新状态后重试");
+  return <Panel title="价格与费用预算" className="finance-panel">
+    <p className="muted">费率单位为每百万 Token。系统不内置供应商价格；请核对官方计费合同后填写依据摘要。应用预算不等于供应商账单上限。</p>
+    <label>查看模型<select value={selected} onChange={e=>setSelected(e.target.value as "deepseek" | "openai" | "local")}>
+      {providers.map(item=><option key={item.provider} value={item.provider}>{item.provider}{item.provider===active ? "（当前）" : "（备用）"}</option>)}
+    </select></label>
+    <div className="provider-status"><Status value={status?.enabled ? "configured" : "unconfigured"}/>
+      <span>{status?.enabled ? `预算 v${status.policy?.version} · ${status.policy?.provider}/${status.policy?.model}` : "尚未启用预算"}</span></div>
+    {status?.usage && <div className="finance-summary">
+      <span>租户占用 <strong>{status.usage.tenant_amount ?? '未知'} {status.usage.tenant_amount !== null && status.policy?.currency}</strong></span>
+      <span>今日占用 <strong>{status.usage.day_amount ?? '未知'} {status.usage.day_amount !== null && status.policy?.currency}</strong></span>
+      <span>未解决费用 <strong>{status.usage.unresolved ? "有，调用将阻断" : "无"}</strong></span>
+      <span>软阈值事件 <strong>{status.soft_events.tenant + status.soft_events.day + status.soft_events.run}</strong></span>
+    </div>}
+    <div className="finance-grid">
+      <label>币种<select value={currency} onChange={e=>setCurrency(e.target.value as "CNY"|"USD")}><option>CNY</option><option>USD</option></select></label>
+      {([['input_rate','普通输入费率'],['output_rate','输出费率'],['cache_read_rate','缓存读取费率'],['cache_write_rate','缓存写入费率']] as const).map(([name,label]) =>
+        <label key={name}>{label}<input inputMode="decimal" value={rates[name]} onChange={e=>setRates({...rates,[name]:e.target.value})}/></label>)}
+      {([['tenant_limit','租户生命周期限额'],['day_limit','UTC 日限额'],['run_limit','单 Run 限额'],
+         ['input_token_ceiling','单请求输入合同上界'],['output_token_limit','单请求输出上限'],
+         ['max_run_requests','单 Run 最多请求数'],['soft_percent','软阈值百分比']] as const).map(([name,label]) =>
+        <label key={name}>{label}<input inputMode="decimal" value={limits[name]} onChange={e=>setLimits({...limits,[name]:e.target.value})}/></label>)}
+      <label className="finance-source">依据 SHA-256（64 位小写）<input spellCheck={false} value={source} onChange={e=>setSource(e.target.value.trim())}/></label>
+    </div>
+    <div className="button-row">
+      <button disabled={!selectedModel} onClick={async()=>{
+        try {
+          await api(`/api/admin/model-prices/${selected}`,jsonRequest("PUT",{publication_id:crypto.randomUUID(),
+            expected_version:price?.version || 0,model:selectedModel,currency,source_sha256:validSource(),...rates}));
+          setNotice("模型价格版本已发布"); await load();
+        } catch (failure) { reportFailure(failure); }
+      }}>发布价格版本</button>
+      <button className="primary" disabled={selected !== active || !selectedModel || !price || price.provider !== selected || price.model !== selectedModel || price.currency !== currency} onClick={async()=>{
+        try {
+          await api("/api/admin/model-budget",jsonRequest("PUT",{publication_id:crypto.randomUUID(),
+            expected_version:status?.policy?.version || 0,provider:selected,model:selectedModel,currency,
+            tenant_limit:limits.tenant_limit,day_limit:limits.day_limit,run_limit:limits.run_limit,
+            input_token_ceiling:integer('input_token_ceiling'),output_token_limit:integer('output_token_limit'),
+            max_run_requests:integer('max_run_requests'),soft_percent:integer('soft_percent'),source_sha256:validSource()}));
+          setNotice("模型预算版本已发布"); await load();
+        } catch (failure) { reportFailure(failure); }
+      }}>发布预算版本</button>
+    </div>
+    {!price && <p className="muted">必须先为所选供应商和模型发布明确价格，才能发布相应预算合同。</p>}
+    {selected !== active && (selected === "openai" || selected === "local") && <div>
+      <p className="muted">备用模型费用计入上方租户总预算。此处仅批准所选模型的 Token 上界，不会自动开启故障切换。{route ? `当前备用合同 v${route.version}` : "尚无备用合同"}</p>
+      <div className="finance-grid">
+        <label>备用输入 Token 合同上界<input inputMode="numeric" value={routeTokens.input_token_ceiling}
+          onChange={e=>setRouteTokens({...routeTokens,input_token_ceiling:e.target.value})}/></label>
+        <label>备用输出 Token 上限<input inputMode="numeric" value={routeTokens.output_token_limit}
+          onChange={e=>setRouteTokens({...routeTokens,output_token_limit:e.target.value})}/></label>
+        <label className="finance-source">备用合同依据 SHA-256<input spellCheck={false} value={routeSource}
+          onChange={e=>setRouteSource(e.target.value.trim())}/></label>
+      </div>
+      <button disabled={!status?.enabled || !price || price.provider!==selected || price.model!==selectedModel || price.currency!==status.policy?.currency}
+        onClick={async()=>{
+          try {
+            if (!/^[0-9a-f]{64}$/.test(routeSource)) throw new ApiError("请输入备用合同依据的 64 位小写 SHA-256",422);
+            const ceiling=Number(routeTokens.input_token_ceiling), limit=Number(routeTokens.output_token_limit);
+            if (![ceiling,limit].every(value=>Number.isSafeInteger(value) && value>=1 && value<=1_000_000_000))
+              throw new ApiError("备用 Token 上界无效",422);
+            await api(`/api/admin/model-route-budget/${selected}`,jsonRequest("PUT",{
+              publication_id:crypto.randomUUID(),expected_version:route?.version || 0,model:selectedModel,
+              currency:status?.policy?.currency,input_token_ceiling:ceiling,output_token_limit:limit,
+              source_sha256:routeSource}));
+            setNotice("备用模型预算合同已发布"); await load();
+          } catch (failure) { reportFailure(failure); }
+        }}>发布备用模型合同</button>
+    </div>}
+  </Panel>;
 }
 
 function ContactsPage({
@@ -1539,12 +1767,14 @@ function AuditPage() {
 function Panel({
   title,
   children,
+  className = "",
 }: {
   title: string;
   children: React.ReactNode;
+  className?: string;
 }) {
   return (
-    <section className="admin-panel">
+    <section className={`admin-panel ${className}`.trim()}>
       <h2>{title}</h2>
       {children}
     </section>

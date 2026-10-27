@@ -1,0 +1,85 @@
+rule_files:
+  - model-circuit-alerts.yml
+evaluation_interval: 1m
+tests:
+  - name: healthy circuit collection stays quiet
+    interval: 1m
+    input_series:
+      - series: customer_service_model_circuit_collection_success{job="customer-service-private",instance="synthetic"}
+        values: 1+0x10
+      - series: customer_service_model_circuit_collection_timestamp_seconds{job="customer-service-private",instance="synthetic"}
+        values: 0+60x10
+      - series: customer_service_model_circuit_openings_total{job="customer-service-private",instance="synthetic"}
+        values: 0+0x10
+      - series: customer_service_model_circuit_states{job="customer-service-private",instance="synthetic",state="half_open"}
+        values: 0+0x10
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: CustomerServiceModelCircuitCollectionUnavailable
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: CustomerServiceModelCircuitOpened
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: CustomerServiceModelCircuitProbeStuck
+        exp_alerts: []
+  - name: new opening and stuck probe alert without tenant or model labels
+    interval: 1m
+    input_series:
+      - series: customer_service_model_circuit_openings_total{job="customer-service-private",instance="synthetic"}
+        values: 0 0 1+0x8
+      - series: customer_service_model_circuit_states{job="customer-service-private",instance="synthetic",state="half_open"}
+        values: 1+0x10
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: CustomerServiceModelCircuitOpened
+        exp_alerts:
+          - exp_labels:
+              job: customer-service-private
+              instance: synthetic
+              severity: warning
+              owner: service-oncall
+            exp_annotations:
+              summary: One or more tenant-model circuits opened or reopened
+              runbook: docs/model-circuit-operations.md
+      - eval_time: 6m
+        alertname: CustomerServiceModelCircuitProbeStuck
+        exp_alerts:
+          - exp_labels:
+              job: customer-service-private
+              instance: synthetic
+              state: half_open
+              severity: warning
+              owner: service-oncall
+            exp_annotations:
+              summary: A shared model circuit has remained half-open
+              runbook: docs/model-circuit-operations.md
+  - name: failed or stale collection alerts
+    interval: 1m
+    input_series:
+      - series: customer_service_model_circuit_collection_success{job="customer-service-private",instance="failed"}
+        values: 0+0x10
+      - series: customer_service_model_circuit_collection_success{job="customer-service-private",instance="stale"}
+        values: 1+0x10
+      - series: customer_service_model_circuit_collection_timestamp_seconds{job="customer-service-private",instance="stale"}
+        values: 0+0x10
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: CustomerServiceModelCircuitCollectionUnavailable
+        exp_alerts:
+          - exp_labels:
+              job: customer-service-private
+              instance: failed
+              severity: critical
+              owner: platform-oncall
+            exp_annotations:
+              summary: Model circuit evidence collection is missing, failed or stale
+              runbook: docs/model-circuit-operations.md
+          - exp_labels:
+              job: customer-service-private
+              instance: stale
+              severity: critical
+              owner: platform-oncall
+            exp_annotations:
+              summary: Model circuit evidence collection is missing, failed or stale
+              runbook: docs/model-circuit-operations.md

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { ApiError, api, streamChat } from './api'
+import { ApiError, api, streamChat, resumeChat, type RunSnapshot, type StreamEvent } from './api'
+import { requestStop, type ChatOperation } from './chat-control'
 import { adminSessionListPath, messageFeedbackPath, quoteMessageContent, sessionIdFromSearch, sessionListPath, sessionUrl } from './session'
 import AdminConsole from './AdminConsole'
 import MarkdownContent from './MarkdownContent'
@@ -8,9 +9,9 @@ type KnowledgeImage = { id: string; url: string; alt_text: string; location: str
 type Citation = { document: string; section?: string; excerpt: string; images?: KnowledgeImage[] }
 type Message = { id?: string; role: 'user' | 'assistant'; content: string; citations?: Citation[]; feedback?: 'up' | 'down' | null; status?: string; created_at?: string }
 type SessionSummary = { id: string; title: string; status: string; message_count: number; last_message?: string; archived_at?: string; deleted_at?: string; created_at: string; updated_at: string }
-type SessionDetail = { session: SessionSummary; messages: Message[] }
+type SessionDetail = { session: SessionSummary; messages: Message[]; run?: RunSnapshot | null }
 type AdminSession = SessionSummary & { run_count: number; error_count: number; last_error_code?: string; provider?: string; model?: string; contact_count: number }
-type Provider = { provider: 'deepseek' | 'openai'; model: string; configured: boolean; last_test_status?: string; last_test_message?: string }
+type Provider = { provider: 'deepseek' | 'openai' | 'local'; model: string; configured: boolean; last_test_status?: string; last_test_message?: string }
 type DocumentRow = { id: string; display_name: string; size: number; chunk_count: number; status: string }
 type Contact = { id: string; name: string; phone?: string; email?: string; summary: string; created_at: string }
 type KnowledgeLocation = { path: string; supported_extensions: string[] }
@@ -20,8 +21,8 @@ type KnowledgeImportResult = { imported_count: number; skipped_count: number; fa
 
 const starterQuestions = ['你们的退款政策是什么？', '查询订单 A10001，手机号后四位 1234', '今天是星期几？']
 
-export default function App() {
-  const [page, setPage] = useState<'chat' | 'admin'>(() => window.location.pathname.startsWith('/admin') ? 'admin' : 'chat')
+export default function App({ role }: { role?: 'customer' | 'support' | 'admin' }) {
+  const [page, setPage] = useState<'chat' | 'admin'>(() => role !== 'customer' && window.location.pathname.startsWith('/admin') ? 'admin' : 'chat')
   const [sessionId, setSessionId] = useState('')
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [sessionScope, setSessionScope] = useState<'active' | 'archived'>('active')
@@ -33,12 +34,12 @@ export default function App() {
   const [quotedMessage, setQuotedMessage] = useState<Message | null>(null)
   const [toast, setToast] = useState('')
   const [running, setRunning] = useState(false)
-  const [runId, setRunId] = useState('')
   const [status, setStatus] = useState('就绪')
   const [showContact, setShowContact] = useState(false)
   const [contactSummary, setContactSummary] = useState('')
   const [loadingSession, setLoadingSession] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
+  const operationRef = useRef<ChatOperation | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
   const toastTimerRef = useRef<number | null>(null)
   const showToast = (message: string) => {
@@ -59,16 +60,31 @@ export default function App() {
   }
   const openSession = async (id: string, updateUrl = true) => {
     if (abortRef.current) return
+    const op: ChatOperation = {controller:new AbortController(),sessionId:id,runId:'',requestId:'',stopRequested:false,cancelInFlight:false,durable:false}
+    operationRef.current = op; abortRef.current = op.controller
+    let resumed = false
     setLoadingSession(true)
     setQuotedMessage(null)
     try {
-      const detail = await api<SessionDetail>(`/api/chat/sessions/${id}`)
+      const detail = await api<SessionDetail>(`/api/chat/sessions/${id}`, {signal:op.controller.signal})
+      if (operationRef.current !== op) return
       setSessionId(id); setMessages(detail.messages); setQuotedMessage(null); setShowContact(false); setStatus('历史会话已加载')
       if (updateUrl) updateSessionUrl(id)
+      if (detail.run && ['queued','running'].includes(detail.run.status)) {
+        op.runId = detail.run.run_id; op.durable = true; op.stopRequested = detail.run.cancel_requested
+        setMessages([...detail.messages,{role:'assistant',content:detail.run.draft,citations:detail.run.citations as Citation[]}])
+        setRunning(true); setStatus(detail.run.cancel_requested ? '停止请求已确认，等待运行结束…' : '正在恢复运行事件…')
+        resumed = true
+        void followOperation(op, resumeChat(id,detail.run,op.controller.signal), detail.run.citations as Citation[])
+      }
     } catch (error) {
+      if (operationRef.current !== op) return
       setSessionId(''); setMessages([]); updateSessionUrl('', 'replace')
       setStatus(error instanceof Error ? error.message : '会话加载失败')
-    } finally { setLoadingSession(false) }
+    } finally {
+      if (!resumed && operationRef.current === op) { operationRef.current = null; abortRef.current = null }
+      if (operationRef.current === op || operationRef.current === null) setLoadingSession(false)
+    }
   }
   const newSession = () => {
     if (abortRef.current) return
@@ -95,7 +111,8 @@ export default function App() {
   }
   useEffect(() => {
     const restore = () => {
-      setPage(window.location.pathname.startsWith('/admin') ? 'admin' : 'chat')
+      operationRef.current = null; abortRef.current?.abort(); abortRef.current = null; setRunning(false)
+      setPage(role !== 'customer' && window.location.pathname.startsWith('/admin') ? 'admin' : 'chat')
       void refreshSessions()
       const id = sessionIdFromSearch(window.location.search)
       if (id) void openSession(id, false)
@@ -106,51 +123,91 @@ export default function App() {
     return () => window.removeEventListener('popstate', restore)
   }, [])
   useEffect(() => { void refreshSessions() }, [sessionScope])
-  useEffect(() => () => { if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current) }, [])
+  useEffect(() => () => { operationRef.current = null; abortRef.current?.abort(); if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current) }, [])
 
-  const send = async (preset?: string) => {
-    const typedContent = (preset ?? input).trim()
-    if (!typedContent || running) return
-    const selectedQuote = preset ? null : quotedMessage
-    const content = selectedQuote ? `${quoteMessageContent(selectedQuote.role, selectedQuote.content)}${typedContent}` : typedContent
-    setRunning(true)
-    let activeSessionId = sessionId
-    let messageAdded = false
-    let citations: Citation[] = []
+  const followOperation = async (op: ChatOperation, frames: AsyncGenerator<StreamEvent>, initialCitations: Citation[] = []) => {
+    let citations = initialCitations
     try {
-      if (!activeSessionId) {
-        setStatus('正在创建会话…')
-        const created = await api<{ id: string }>('/api/chat/sessions', { method: 'POST' })
-        activeSessionId = created.id; setSessionId(created.id); updateSessionUrl(created.id, 'replace')
-      }
-      setInput(''); setQuotedMessage(null); setMessages(old => [...old, { role: 'user', content }, { role: 'assistant', content: '' }]); setStatus('正在连接模型…'); messageAdded = true
-      const controller = new AbortController(); abortRef.current = controller
-      for await (const frame of streamChat(activeSessionId, content, controller.signal)) {
-        if (frame.event === 'run_started') setRunId(String(frame.data.run_id || ''))
-        if (frame.event === 'provider') setStatus(`正在使用 ${frame.data.provider} / ${frame.data.model}`)
-        if (frame.event === 'answer_reset') setMessages(old => old.map((m, i) => i === old.length - 1 ? { ...m, content: '' } : m))
+      for await (const frame of frames) {
+        if (operationRef.current !== op) return
+        if (frame.event === 'submission_started') op.requestId = String(frame.data.request_id || '')
+        if (frame.event === 'run_snapshot') {
+          const detail = frame.data as unknown as SessionDetail
+          citations = (detail.run?.citations || []) as Citation[]
+          setMessages(detail.run?.status === 'complete' ? detail.messages : [...detail.messages,
+            {role:'assistant',content:detail.run?.draft || '',citations}])
+        }
+        if (frame.event === 'run_started') {
+          const firstAck = !op.runId
+          op.runId = String(frame.data.run_id || ''); op.durable ||= frame.data.execution_mode === 'queued'
+          if (op.stopRequested && firstAck) await requestStop(op, () => operationRef.current === op, setStatus)
+        }
+        if (frame.event === 'run_queued' && !op.stopRequested) setStatus('消息已提交，正在等待客服处理…')
+        if (frame.event === 'provider' && !op.stopRequested) setStatus(`正在使用 ${frame.data.provider} / ${frame.data.model}`)
+        if (frame.event === 'answer_reset') { citations = []; setMessages(old => old.map((m, i) => i === old.length - 1 ? { ...m, content: '', citations: [] } : m)) }
         if (frame.event === 'token') setMessages(old => old.map((m, i) => i === old.length - 1 ? { ...m, content: m.content + String(frame.data.text || '') } : m))
-        if (frame.event === 'tool_start') setStatus(frame.data.tool === 'search_knowledge' ? '正在检索企业知识库…' : '正在查询业务信息…')
-        if (frame.event === 'tool_end') setStatus('查询完成，正在组织回答…')
+        if (frame.event === 'tool_start' && !op.stopRequested) setStatus(frame.data.tool === 'search_knowledge' ? '正在检索企业知识库…' : '正在查询业务信息…')
+        if (frame.event === 'tool_end' && !op.stopRequested) setStatus('查询完成，正在组织回答…')
         if (frame.event === 'citation') { citations = [...citations, frame.data as unknown as Citation]; setMessages(old => old.map((m, i) => i === old.length - 1 ? { ...m, citations } : m)) }
-        if (frame.event === 'contact_form') { setContactSummary(String(frame.data.summary || content)); setShowContact(true) }
+        if (frame.event === 'contact_form') { setContactSummary(String(frame.data.summary || '')); setShowContact(true) }
         if (frame.event === 'error') throw new Error(String(frame.data.message || '模型调用失败'))
+        if (frame.event === 'interrupted') throw new Error('回答已停止，请重新发送消息')
         if (frame.event === 'done') {
           const messageId = String(frame.data.message_id || '')
-          if (messageId) setMessages(old => old.map((message, index) => index === old.length - 1 ? { ...message, id: messageId } : message))
+          if (messageId) setMessages(old => old.some(message => message.id === messageId) ? old :
+            old.map((message, index) => index === old.length - 1 ? { ...message, id: messageId } : message))
           setStatus('回答完成')
         }
       }
     } catch (error) {
-      const message = error instanceof Error && error.name !== 'AbortError' ? error.message : '回答已停止'
+      if (operationRef.current !== op) return
+      const message = error instanceof Error && error.name !== 'AbortError' ? error.message : '连接已断开，请刷新查看运行状态'
+      setMessages(old => old.map((m, i) => i === old.length - 1 ? { ...m, content: m.content || message, status: 'error' } : m))
+      setStatus(message)
+    } finally {
+      if (operationRef.current === op) {
+        operationRef.current = null; abortRef.current = null; setRunning(false)
+        await refreshSessions().catch(() => null)
+      }
+    }
+  }
+
+  const send = async (preset?: string) => {
+    const typedContent = (preset ?? input).trim()
+    if (!typedContent || running || abortRef.current) return
+    const selectedQuote = preset ? null : quotedMessage
+    const content = selectedQuote ? `${quoteMessageContent(selectedQuote.role, selectedQuote.content)}${typedContent}` : typedContent
+    setRunning(true)
+    const op: ChatOperation = {controller:new AbortController(),sessionId,runId:'',requestId:'',stopRequested:false,cancelInFlight:false,durable:false}
+    operationRef.current = op; abortRef.current = op.controller
+    let activeSessionId = sessionId
+    let messageAdded = false
+    let followed = false
+    try {
+      if (!activeSessionId) {
+        setStatus('正在创建会话…')
+        const created = await api<{ id: string }>('/api/chat/sessions', { method: 'POST', signal:op.controller.signal })
+        if (operationRef.current !== op) return
+        activeSessionId = created.id; setSessionId(created.id); updateSessionUrl(created.id, 'replace')
+      }
+      op.sessionId = activeSessionId
+      if (op.stopRequested) { setStatus('消息尚未发送，已取消'); return }
+      setInput(''); setQuotedMessage(null); setMessages(old => [...old, { role: 'user', content }, { role: 'assistant', content: '' }]); setStatus('正在连接模型…'); messageAdded = true
+      followed = true
+      await followOperation(op, streamChat(activeSessionId, content, op.controller.signal))
+    } catch (error) {
+      if (operationRef.current !== op) return
+      const message = error instanceof Error && error.name !== 'AbortError' ? error.message : '连接已断开，请刷新查看运行状态'
       if (messageAdded) setMessages(old => old.map((m, i) => i === old.length - 1 ? { ...m, content: m.content || message, status: 'error' } : m))
       setStatus(message)
-    } finally { setRunning(false); setRunId(''); abortRef.current = null; await refreshSessions().catch(() => null) }
+    } finally {
+      if (!followed && operationRef.current === op) { operationRef.current = null; abortRef.current = null; setRunning(false); await refreshSessions().catch(() => null) }
+    }
   }
 
   const stop = async () => {
-    if (runId) await api(`/api/chat/sessions/${sessionId}/runs/${runId}/cancel`, { method: 'POST' }).catch(() => null)
-    abortRef.current?.abort(); setRunning(false); setStatus('回答已停止')
+    const op = operationRef.current
+    if (op) await requestStop(op, () => operationRef.current === op, setStatus)
   }
 
   const copyMessage = async (message: Message) => {
@@ -189,7 +246,7 @@ export default function App() {
       <div className="brand"><span className="brand-mark">云</span><div><strong>云小智</strong><small>AI CUSTOMER CARE</small></div></div>
       <nav>
         <button className={page === 'chat' ? 'active' : ''} onClick={() => navigatePage('chat')}>对话工作台</button>
-        <button className={page === 'admin' ? 'active' : ''} onClick={() => navigatePage('admin')}>系统管理</button>
+        {role !== 'customer' && <button className={page === 'admin' ? 'active' : ''} onClick={() => navigatePage('admin')}>系统管理</button>}
       </nav>
       <div className="sidebar-note"><i />本地知识库<br/><span>文档不会生成向量</span></div>
     </aside>
@@ -214,7 +271,7 @@ export default function App() {
         </div>
         {toast && <div className="chat-toast" role="status" aria-live="polite">✓ {toast}</div>}
         {showContact && <ContactForm sessionId={sessionId} summary={contactSummary} onClose={() => setShowContact(false)} />}
-      </section> : <AdminConsole />}
+      </section> : <AdminConsole role={role} />}
     </main>
   </div>
 }
@@ -250,8 +307,8 @@ function Admin() {
   }
   useEffect(() => { void load() }, [])
   useEffect(() => { void load() }, [adminSessionScope])
-  const save = async (provider: string) => { await api(`/api/admin/providers/${provider}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: models[provider], api_key: keys[provider] || null }) }); setKeys({ ...keys, [provider]: '' }); setNotice(`${provider} 配置已安全保存`); await load() }
-  const test = async (provider: string) => { const result = await api<{ message: string }>(`/api/admin/providers/${provider}/test`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: models[provider], api_key: keys[provider] || null }) }); setNotice(result.message); await load() }
+  const save = async (provider: string) => { await api(`/api/admin/providers/${provider}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: models[provider], api_key: provider === 'local' ? null : keys[provider] || null }) }); setKeys({ ...keys, [provider]: '' }); setNotice(`${provider} 配置已安全保存`); await load() }
+  const test = async (provider: string) => { const result = await api<{ message: string }>(`/api/admin/providers/${provider}/test`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: models[provider], api_key: provider === 'local' ? null : keys[provider] || null }) }); setNotice(result.message); await load() }
   const activate = async (provider: string) => { await api('/api/admin/active-provider', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider }) }); setNotice('已切换，下一条消息生效'); await load() }
   const importKnowledge = async () => {
     if (!knowledgePath.trim() || importing) return
@@ -297,7 +354,7 @@ function Admin() {
   return <div className="admin-grid">
     {notice && <div className="notice">{notice}</div>}
     <section className="card wide"><div className="card-title"><div><span className="eyebrow">SESSION OPERATIONS</span><h2>会话管理</h2></div><div className="admin-session-filters">{(['all', 'active', 'archived', 'deleted'] as const).map(scope => <button className={adminSessionScope === scope ? 'active' : ''} key={scope} onClick={() => setAdminSessionScope(scope)}>{{ all: '全部', active: '当前', archived: '已归档', deleted: '已删除' }[scope]}</button>)}</div></div><p className="muted">安全删除仅隐藏会话，不清除消息、运行和联系记录；可在此恢复。</p><div className="admin-session-list">{adminSessions.length ? adminSessions.map(item => <div className="admin-session-row" key={item.id}><div className="admin-session-main"><strong>{item.title}</strong><small>{item.deleted_at ? '已删除' : item.archived_at ? '已归档' : item.status === 'running' ? '回答中' : '当前'} · 更新于 {new Date(item.updated_at).toLocaleString('zh-CN')}</small></div><div className="admin-session-stats"><span>消息 {item.message_count}</span><span>运行 {item.run_count}</span><span className={item.error_count ? 'has-error' : ''}>错误 {item.error_count}</span><span>联系 {item.contact_count}</span><span>{item.provider ? `${item.provider} / ${item.model}` : '暂无模型调用'}</span>{item.last_error_code && <span className="has-error">最近错误：{item.last_error_code}</span>}</div>{(item.archived_at || item.deleted_at) && <button onClick={() => void restoreAdminSession(item.id)}>恢复</button>}</div>) : <div className="empty">当前筛选下没有会话</div>}</div></section>
-    <section className="card wide"><div className="card-title"><div><span className="eyebrow">MODEL GATEWAY</span><h2>在线模型</h2></div><span className="badge">当前：{active}</span></div><p className="muted">密钥在浏览器中只写，后端使用本地主密钥加密保存，不会再次回显。</p><div className="provider-grid">{providers.map(p => <div className={`provider-card ${active === p.provider ? 'selected' : ''}`} key={p.provider}><div className="provider-head"><div><strong>{p.provider === 'deepseek' ? 'DeepSeek' : 'OpenAI'}</strong><small>{p.configured ? '密钥已配置' : '尚未配置'}</small></div><i className={p.configured ? 'ok' : ''}/></div><label>模型名<input value={models[p.provider] || ''} onChange={e => setModels({ ...models, [p.provider]: e.target.value })}/></label><label>API Key<input type="password" autoComplete="new-password" value={keys[p.provider] || ''} onChange={e => setKeys({ ...keys, [p.provider]: e.target.value })} placeholder={p.configured ? '留空表示不修改' : '在此录入，仅发送给本机后端'}/></label><div className="actions"><button onClick={() => void test(p.provider)}>测试连接</button><button onClick={() => void save(p.provider)}>保存</button><button className="primary" disabled={!p.configured || active === p.provider} onClick={() => void activate(p.provider)}>设为当前</button></div>{p.last_test_message && <small className="test-result">上次测试：{p.last_test_message}</small>}</div>)}</div></section>
+    <section className="card wide"><div className="card-title"><div><span className="eyebrow">MODEL GATEWAY</span><h2>模型供应商</h2></div><span className="badge">当前：{active}</span></div><p className="muted">在线模型密钥在浏览器中只写；本机模型仅由各主机配置回环服务，不在此录入端点或密钥。</p><div className="provider-grid">{providers.map(p => <div className={`provider-card ${active === p.provider ? 'selected' : ''}`} key={p.provider}><div className="provider-head"><div><strong>{p.provider === 'deepseek' ? 'DeepSeek' : p.provider === 'local' ? '本机模型' : 'OpenAI'}</strong><small>{p.provider === 'local' ? p.configured ? '本机端点已配置' : '本机端点未配置' : p.configured ? '密钥已配置' : '尚未配置'}</small></div><i className={p.configured ? 'ok' : ''}/></div><label>模型名<input value={models[p.provider] || ''} onChange={e => setModels({ ...models, [p.provider]: e.target.value })}/></label>{p.provider === 'local' ? <p className="muted">每台主机分别配置回环 OpenAI 兼容服务。</p> : <label>API Key<input type="password" autoComplete="new-password" value={keys[p.provider] || ''} onChange={e => setKeys({ ...keys, [p.provider]: e.target.value })} placeholder={p.configured ? '留空表示不修改' : '在此录入，仅发送给本机后端'}/></label>}<div className="actions"><button onClick={() => void test(p.provider)}>测试连接</button><button onClick={() => void save(p.provider)}>保存</button><button className="primary" disabled={!p.configured || active === p.provider} onClick={() => void activate(p.provider)}>设为当前</button></div>{p.last_test_message && <small className="test-result">上次测试：{p.last_test_message}</small>}</div>)}</div></section>
     <section className="card"><div className="card-title"><div><span className="eyebrow">LOCAL KNOWLEDGE</span><h2>知识文档</h2></div><div className="picker-actions"><label className="upload">选择文件<input type="file" multiple accept=".pdf,.doc,.docx,.wps,.rtf,.odt,.xls,.xlsx,.et,.ods,.csv,.tsv,.ppt,.pptx,.dps,.odp,.md,.txt,.html,.htm,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp" onChange={e => { const files = Array.from(e.currentTarget.files || []); e.currentTarget.value = ''; void uploadSelected(files) }}/></label><label className="upload">选择目录<input ref={element => { element?.setAttribute('webkitdirectory', '') }} type="file" multiple accept=".pdf,.doc,.docx,.wps,.rtf,.odt,.xls,.xlsx,.et,.ods,.csv,.tsv,.ppt,.pptx,.dps,.odp,.md,.txt,.html,.htm,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp" onChange={e => { const files = Array.from(e.currentTarget.files || []); e.currentTarget.value = ''; void uploadSelected(files) }}/></label></div></div><p className="muted">支持 PDF、Office/WPS、OpenDocument、表格、演示文稿、文本、网页和图片；扫描件及嵌入图片自动 OCR。</p><div className="path-import"><input value={knowledgePath} onChange={e => setKnowledgePath(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void importKnowledge() }} placeholder="输入文件或目录的完整地址"/></div><div className="list">{documents.length ? documents.map(d => <div className="list-row" key={d.id}><div><strong>{d.display_name}</strong><small>{(d.size / 1024).toFixed(1)} KB · {d.chunk_count} 个片段</small></div><button className="danger" onClick={() => void removeDoc(d.id)}>删除</button></div>) : <div className="empty">还没有知识文档</div>}</div>{importDetails.length ? <div className="import-report"><strong>逐文件处理结果</strong>{importDetails.map((item, index) => <div className={`import-issue ${item.kind === '失败' ? 'failed' : 'skipped'}`} key={`${item.path}-${index}`}><span>{item.kind}</span><div><b>{item.display_name || item.path}</b><small>{item.reason}</small></div></div>)}</div> : null}<div className="knowledge-actions"><button className="primary" disabled={importing} onClick={() => void importKnowledge()}>{importing ? '正在导入…' : '扫描并导入'}</button></div></section>
     <section className="card"><div className="card-title"><div><span className="eyebrow">CONTACT LOG</span><h2>联系登记</h2></div><span className="badge">{contacts.length}</span></div><div className="list">{contacts.length ? contacts.map(c => <div className="list-row contact" key={c.id}><div><strong>{c.name}</strong><small>{c.phone || c.email}</small><p>{c.summary}</p></div></div>) : <div className="empty">暂无登记记录</div>}</div></section>
   </div>

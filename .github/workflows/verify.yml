@@ -1,0 +1,230 @@
+name: Verify
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned dependency manager
+        run: python -m pip install --disable-pip-version-check uv==0.13.0
+      - name: Verify and install locked Python dependencies
+        run: |
+          uv lock --check
+          uv sync --locked --extra test --extra production
+      - name: Audit locked Python dependency versions
+        run: |
+          python -m pip install --disable-pip-version-check pip-audit==2.10.1
+          uv export --locked --extra test --extra production --no-emit-project --output-file "$RUNNER_TEMP/python-locked-requirements.txt" > /dev/null
+          pip-audit -r "$RUNNER_TEMP/python-locked-requirements.txt" --disable-pip --progress-spinner off
+      - name: Check dependency consistency
+        run: uv pip check
+      - name: Compile application and tests
+        run: .venv/bin/python -m compileall -q app scripts tests
+      - name: Run backend tests and report skips
+        run: .venv/bin/python -m pytest -q -rs
+
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install locked frontend dependencies
+        run: npm ci
+      - name: Audit locked frontend dependencies
+        run: npm audit --audit-level=moderate --registry=https://registry.npmjs.org
+      - name: Run frontend tests
+        run: npm test
+      - name: Build frontend
+        run: npm run build
+
+  postgres-redis-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Install locked backend dependencies
+        run: |
+          python -m pip install --disable-pip-version-check uv==0.13.0
+          uv sync --locked --extra test --extra production
+      - name: Install PostgreSQL 16 backup client for recovery tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client-16
+          test -x /usr/lib/postgresql/16/bin/pg_dump
+          test -x /usr/lib/postgresql/16/bin/pg_restore
+          test -x /usr/lib/postgresql/16/bin/psql
+      - name: Start disposable loopback PostgreSQL and Redis
+        run: docker compose -f compose.integration.yml up -d --wait
+      - name: Run real integration tests with no skips
+        env:
+          TEST_POSTGRES_URL: postgresql+psycopg://integration:local-integration-only@127.0.0.1:55432/postgres
+          TEST_REDIS_URL: redis://127.0.0.1:56379/0
+          TEST_POSTGRES_BIN: /usr/lib/postgresql/16/bin
+        run: |
+          .venv/bin/python -m pytest -q -rs -m 'not requires_local_rag_model' \
+            tests/test_postgresql_integration.py tests/test_durable_chat.py \
+            tests/test_durable_knowledge.py tests/test_knowledge_admission.py tests/test_knowledge_actions.py \
+            tests/test_tracing_pg.py tests/test_redis_admission.py tests/test_rag_release_audit.py \
+            tests/test_maintenance.py tests/test_rag_release_storage.py tests/test_rag_release_service.py tests/test_rag_rollout_storage.py tests/test_rag_rollout_service.py tests/test_rag_route_projection.py tests/test_run_rag_route.py tests/test_rag_routed_retrieval.py tests/test_rag_rollout_window_pg.py tests/test_rag_rollout_advance.py tests/test_rag_rollout_health.py \
+            tests/test_rag_reversion.py tests/test_rag_backup_restore.py tests/test_model_usage.py tests/test_model_budget.py tests/test_model_cost.py \
+            --junitxml="$RUNNER_TEMP/postgres-redis-integration.xml"
+          .venv/bin/python -c 'import xml.etree.ElementTree as ET, os; root=ET.parse(os.environ["RUNNER_TEMP"]+"/postgres-redis-integration.xml").getroot(); assert sum(int(node.get("skipped", "0")) for node in root.iter("testsuite")) == 0, "Integration tests skipped"'
+      - name: Stop only this job's disposable services
+        if: always()
+        run: docker compose -f compose.integration.yml down
+
+  nginx-proxy-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Install locked test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check uv==0.13.0
+          uv sync --locked --extra test --extra production
+      - name: Fetch digest-pinned synthetic protocol peers
+        run: |
+          docker pull nginx@sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951
+          docker pull python:3.12-slim-trixie@sha256:cb33f7f771ecec2ef1225cf39b159591a040391bd73e4c01f00fdfc4c47611d2
+      - name: Validate real TLS proxy and unbuffered SSE with no skips
+        env:
+          TEST_NGINX_IMAGE: nginx@sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951
+        run: |
+          .venv/bin/python -m pytest -q -rs tests/test_nginx_proxy.py --junitxml="$RUNNER_TEMP/nginx-proxy.xml"
+          .venv/bin/python -c 'import xml.etree.ElementTree as ET, os; root=ET.parse(os.environ["RUNNER_TEMP"]+"/nginx-proxy.xml").getroot(); assert sum(int(node.get("skipped", "0")) for node in root.iter("testsuite")) == 0, "Proxy tests skipped"'
+
+  linux-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build locked, non-root Linux image
+        run: docker build --pull --platform linux/amd64 --tag customer-service:verify .
+      - name: Check artifact identity and offline startup
+        run: |
+          test "$(docker image inspect customer-service:verify --format '{{.Config.User}}')" = '65532:65532'
+          test "$(docker image inspect customer-service:verify --format '{{json .Config.Entrypoint}}')" = 'null'
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --entrypoint /opt/customer-service/.venv/bin/python customer-service:verify \
+            -c 'import os; from pathlib import Path; import app.main, app.chat_worker, app.knowledge_worker; assert os.getuid() == 65532 and Path("frontend/dist/index.html").is_file()'
+          docker image inspect customer-service:verify --format 'image_id={{.Id}}'
+      - name: Verify parser sandbox and document formats in the actual image
+        run: |
+          docker run --rm --read-only --tmpfs /tmp:rw,size=256m --cap-drop ALL \
+            --security-opt no-new-privileges --memory=3g --pids-limit=128 \
+            -v "$PWD/tests/fixtures:/checks:ro" -e PYTHONPATH=/opt/customer-service \
+            --entrypoint /opt/customer-service/.venv/bin/python customer-service:verify \
+            /checks/parser_sandbox_check.py
+          docker run --rm --read-only --tmpfs /tmp:rw,size=256m --cap-drop ALL \
+            --security-opt no-new-privileges --memory=3g --pids-limit=128 \
+            -v "$PWD/tests/fixtures:/checks:ro" -e PYTHONPATH=/opt/customer-service \
+            --entrypoint /opt/customer-service/.venv/bin/python customer-service:verify \
+            /checks/parser_format_check.py
+      - name: Verify immutable-image migration and knowledge Worker CLI
+        run: |
+          docker run -d --name cs-image-acceptance-pg --tmpfs /var/lib/postgresql/data:rw \
+            -e POSTGRES_USER=integration -e POSTGRES_PASSWORD=local-integration-only \
+            pgvector/pgvector@sha256:a36250871de0833b8757561c72f2477ef1ddd1101afa4e617fb552e0de514c6b
+          trap 'docker rm -f cs-image-acceptance-pg' EXIT
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker exec cs-image-acceptance-pg pg_isready -U integration; then ready=1; break; fi
+            sleep 1
+          done
+          test "$ready" = 1
+          docker run --rm --network container:cs-image-acceptance-pg --read-only \
+            --tmpfs /tmp:rw,size=256m --cap-drop ALL --security-opt no-new-privileges \
+            --memory=3g --pids-limit=128 -v "$PWD/tests/fixtures:/checks:ro" \
+            -e PYTHONPATH=/opt/customer-service \
+            --entrypoint /opt/customer-service/.venv/bin/python customer-service:verify \
+            /checks/image_knowledge_acceptance.py
+          docker run --rm --network container:cs-image-acceptance-pg --read-only \
+            --tmpfs /tmp:rw,size=256m --cap-drop ALL --security-opt no-new-privileges \
+            --memory=3g --pids-limit=128 -v "$PWD/tests/fixtures:/checks:ro" \
+            -e PYTHONPATH=/opt/customer-service \
+            --entrypoint /opt/customer-service/.venv/bin/python customer-service:verify \
+            /checks/image_rag_release_acceptance.py
+      - name: Verify bounded container resource failure modes
+        run: python3 scripts/verify_container_limits.py --image customer-service:verify
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Install locked Worker fault-test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check uv==0.13.0
+          uv sync --locked --extra test --extra production
+      - name: Verify Worker OOM and publication commit-boundary recovery
+        run: |
+          docker run -d --name cs-oom-pg-ci --tmpfs /var/lib/postgresql/data:rw \
+            --publish 127.0.0.1::5432 -e POSTGRES_USER=integration \
+            -e POSTGRES_PASSWORD=local-integration-only \
+            pgvector/pgvector@sha256:a36250871de0833b8757561c72f2477ef1ddd1101afa4e617fb552e0de514c6b
+          trap 'docker rm -f cs-oom-pg-ci' EXIT
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker exec cs-oom-pg-ci pg_isready -U integration; then ready=1; break; fi
+            sleep 1
+          done
+          test "$ready" = 1
+          runtime_pg_port="$(docker port cs-oom-pg-ci 5432/tcp | cut -d: -f2)"
+          TEST_POSTGRES_URL="postgresql+psycopg://integration:local-integration-only@127.0.0.1:$runtime_pg_port/postgres" \
+            TEST_RUNTIME_IMAGE=customer-service:verify TEST_IMAGE_PG_CONTAINER=cs-oom-pg-ci \
+            .venv/bin/python -m pytest -q -rs tests/test_knowledge_oom.py --junitxml="$RUNNER_TEMP/worker-oom.xml"
+          .venv/bin/python -c 'import xml.etree.ElementTree as ET, os; root=ET.parse(os.environ["RUNNER_TEMP"]+"/worker-oom.xml").getroot(); assert sum(int(node.get("skipped", "0")) for node in root.iter("testsuite")) == 0, "OOM integration test skipped"'
+      - name: Build and verify byte-reproducible OCI image
+        run: |
+          docker buildx build --pull --platform linux/amd64 --provenance=false \
+            --build-arg SOURCE_DATE_EPOCH=0 \
+            --output "type=oci,dest=$RUNNER_TEMP/customer-service-image.oci.tar,rewrite-timestamp=true" .
+          docker buildx build --pull --no-cache --platform linux/amd64 --provenance=false \
+            --build-arg SOURCE_DATE_EPOCH=0 \
+            --output "type=oci,dest=$RUNNER_TEMP/customer-service-rebuild.oci.tar,rewrite-timestamp=true" .
+          python3 scripts/verify_image_rebuild.py \
+            "$RUNNER_TEMP/customer-service-image.oci.tar" \
+            "$RUNNER_TEMP/customer-service-rebuild.oci.tar"
+          mkdir -p "$RUNNER_TEMP/customer-service-oci"
+          tar -xf "$RUNNER_TEMP/customer-service-image.oci.tar" -C "$RUNNER_TEMP/customer-service-oci"
+      - name: Generate CycloneDX SBOM
+        run: |
+          docker run --rm -v "$RUNNER_TEMP:/scan" \
+            docker.io/aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e \
+            image --input /scan/customer-service-oci --format cyclonedx \
+            --output /scan/customer-service-sbom.cdx.json --timeout 10m
+      - name: Verify SBOM package inventories
+        run: python3 scripts/verify_sbom.py "$RUNNER_TEMP/customer-service-sbom.cdx.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: customer-service-sbom
+          path: ${{ runner.temp }}/customer-service-sbom.cdx.json
+          if-no-files-found: error
+      - name: Scan OS and application packages
+        run: |
+          docker run --rm -v "$RUNNER_TEMP:/scan" \
+            docker.io/aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e \
+            image --input /scan/customer-service-oci --scanners vuln \
+            --severity HIGH,CRITICAL --exit-code 1 --timeout 10m

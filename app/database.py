@@ -306,7 +306,7 @@ def init_database() -> None:
               AND NOT EXISTS (SELECT 1 FROM session_notes WHERE session_notes.session_id=chat_sessions.id)
             """
         )
-        defaults = {"deepseek": "deepseek-chat", "openai": "gpt-5-mini"}
+        defaults = {"deepseek": "deepseek-chat", "openai": "gpt-5-mini", "local": "local-model"}
         for provider, model in defaults.items():
             db.execute(
                 "INSERT OR IGNORE INTO provider_configs(provider, model, updated_at) VALUES (?, ?, ?)",
@@ -346,3 +346,10 @@ def recover_interrupted_runs() -> int:
             (now, *session_ids),
         )
     return len(rows)
+
+
+def health() -> dict:
+    with connect() as db:
+        db.execute("SELECT 1").fetchone()
+        mode = db.execute("PRAGMA journal_mode").fetchone()[0]
+    return {"database_backend": "sqlite", "database_journal_mode": mode}
