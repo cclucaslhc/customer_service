@@ -73,3 +73,12 @@ def test_oidc_attestation_is_scoped_after_all_gates_and_before_final_publication
     assert gate<attest<publish
     assert "if: github.event_name == 'push'" in image[attest:publish]
     assert 'subject-path: ${{ runner.temp }}/customer-service-release.json' in image[attest:publish]
+
+
+def test_oci_export_uses_two_separate_pinned_container_builders():
+    workflow=(ROOT/'.github/workflows/verify.yml').read_text(encoding='utf-8')
+    selected=workflow[workflow.index('name: Build and verify byte-reproducible OCI image'):]
+    for name in ('cs-oci-ci','cs-oci-rebuild-ci'):
+        assert f'buildx create --name {name} --driver docker-container' in selected
+        assert f'buildx build --builder {name} ' in selected
+    assert selected.count('--driver-opt image=moby/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea')==2

@@ -205,10 +205,15 @@ jobs:
           .venv/bin/python -c 'import xml.etree.ElementTree as ET, os; root=ET.parse(os.environ["RUNNER_TEMP"]+"/worker-oom.xml").getroot(); assert sum(int(node.get("skipped", "0")) for node in root.iter("testsuite")) == 0, "OOM integration test skipped"'
       - name: Build and verify byte-reproducible OCI image
         run: |
-          docker buildx build --pull --platform linux/amd64 --provenance=false \
+          trap 'docker buildx rm cs-oci-ci cs-oci-rebuild-ci' EXIT
+          docker buildx create --name cs-oci-ci --driver docker-container \
+            --driver-opt image=moby/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea --bootstrap
+          docker buildx create --name cs-oci-rebuild-ci --driver docker-container \
+            --driver-opt image=moby/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea --bootstrap
+          docker buildx build --builder cs-oci-ci --pull --platform linux/amd64 --provenance=false \
             --build-arg SOURCE_DATE_EPOCH=0 \
             --output "type=oci,dest=$RUNNER_TEMP/customer-service-image.oci.tar,rewrite-timestamp=true" .
-          docker buildx build --pull --no-cache --platform linux/amd64 --provenance=false \
+          docker buildx build --builder cs-oci-rebuild-ci --pull --no-cache --platform linux/amd64 --provenance=false \
             --build-arg SOURCE_DATE_EPOCH=0 \
             --output "type=oci,dest=$RUNNER_TEMP/customer-service-rebuild.oci.tar,rewrite-timestamp=true" .
           python3 scripts/verify_image_rebuild.py \
