@@ -1,5 +1,9 @@
 """Synthetic modern document formats through the real sandboxed parser."""
 from io import BytesIO
+from pathlib import Path
+import sys
+
+sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
 from docx import Document
 from openpyxl import Workbook
 from PIL import Image

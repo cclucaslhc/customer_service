@@ -45,6 +45,16 @@ def test_signature_verifies_actual_image_inventory_and_scan(evidence):
     assert release.verify(manifest,signature,public,pin,image,sbom,scan)==digest
 
 
+def test_binding_check_for_oidc_authenticated_manifest_rejects_changed_artifact(evidence):
+    image,sbom,scan,manifest,_,_,_,digest=evidence
+    assert release.check_binding(manifest,image,sbom,scan)==digest
+    value=json.loads(scan.read_text())
+    value['changed']=True
+    scan.write_text(json.dumps(value))
+    with pytest.raises(ValueError,match='Artifact bytes differ'):
+        release.check_binding(manifest,image,sbom,scan)
+
+
 def test_signature_rejects_modified_manifest_bytes(evidence):
     image,sbom,scan,manifest,signature,public,pin,_=evidence
     manifest.write_bytes(manifest.read_bytes()+b' ')
