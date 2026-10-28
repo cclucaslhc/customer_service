@@ -76,7 +76,9 @@ jobs:
           test -x /usr/lib/postgresql/16/bin/pg_restore
           test -x /usr/lib/postgresql/16/bin/psql
       - name: Start disposable loopback PostgreSQL and Redis
-        run: docker compose -f compose.integration.yml up -d --wait
+        # This job selects PG/Redis tests only. Do not pull unrelated S3 services
+        # or claim this job proves object-store integration.
+        run: docker compose -f compose.integration.yml up -d --wait postgres redis
       - name: Run real integration tests with no skips
         env:
           TEST_POSTGRES_URL: postgresql+psycopg://integration:local-integration-only@127.0.0.1:55432/postgres
@@ -122,6 +124,10 @@ jobs:
   linux-image:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build locked, non-root Linux image
@@ -290,7 +296,13 @@ jobs:
             --junitxml="$RUNNER_TEMP/private-alert-receiver.xml"
           .venv/bin/python -c 'import xml.etree.ElementTree as ET, os; root=ET.parse(os.environ["RUNNER_TEMP"]+"/private-alert-receiver.xml").getroot(); assert sum(int(node.get("skipped", "0")) for node in root.iter("testsuite")) == 0, "Private receiver test skipped"'
       # No production signing key is inferred or generated. The release owner
-      # signs this evidence with an explicitly approved identity outside PR CI.
+      # can still sign offline. Push CI uses a short-lived GitHub OIDC identity;
+      # consumers must check this repository/workflow/source ref, not just a signature.
+      - name: Attest bound release evidence using GitHub OIDC
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: ${{ runner.temp }}/customer-service-release.json
       # Upload only after application AND monitoring gates, never if: always().
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

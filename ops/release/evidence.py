@@ -102,6 +102,14 @@ def sign(manifest,key_file,signature_file):
     return envelope['key_sha256']
 
 
+def check_binding(manifest,oci,sbom,scan):
+    """Byte binding only. Caller must separately authenticate the manifest."""
+    expected=build_evidence(oci,sbom,scan)
+    if json.loads(bounded(manifest,16384))!=expected:
+        raise ValueError('Artifact bytes differ from release evidence')
+    return expected['oci_manifest']
+
+
 def verify(manifest,signature_file,public_key_file,trusted_key_sha256,oci,sbom,scan):
     if not re.fullmatch('[0-9a-f]{64}',trusted_key_sha256): raise ValueError('Pinned public-key fingerprint required')
     key=serialization.load_pem_public_key(bounded(public_key_file,16384))
@@ -120,7 +128,7 @@ def verify(manifest,signature_file,public_key_file,trusted_key_sha256,oci,sbom,s
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     commands=parser.add_subparsers(dest='action',required=True)
-    for action in ('create','verify'):
+    for action in ('create','verify','check-binding'):
         child=commands.add_parser(action)
         for name in ('oci','sbom','scan','manifest'):
             child.add_argument('--'+name,type=Path,required=True)
@@ -133,6 +141,7 @@ def main():
     args=parser.parse_args()
     if args.action=='create': value=create(args.oci,args.sbom,args.scan,args.manifest)
     elif args.action=='sign': value=sign(args.manifest,args.key_file,args.signature)
+    elif args.action=='check-binding': value=check_binding(args.manifest,args.oci,args.sbom,args.scan)
     else: value=verify(args.manifest,args.signature,args.public_key,args.trusted_key_sha256,args.oci,args.sbom,args.scan)
     print(args.action+' verified: '+value)
 

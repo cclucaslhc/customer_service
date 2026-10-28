@@ -60,3 +60,16 @@ def test_monitoring_scan_targets_match_actual_acceptance_images():
         spec.loader.exec_module(module)
         assert getattr(module,constant) in workflow
     assert workflow.index('name: Scan pinned Prometheus and Collector images')<workflow.index('name: Verify real Collector privacy and outage recovery')
+
+
+def test_oidc_attestation_is_scoped_after_all_gates_and_before_final_publication():
+    workflow=(ROOT/'.github/workflows/verify.yml').read_text(encoding='utf-8')
+    image=workflow[workflow.index('  linux-image:'):]
+    assert 'id-token: write' in image and 'attestations: write' in image
+    assert 'id-token: write' not in workflow[:workflow.index('  linux-image:')]
+    gate=image.index('name: Verify real authenticated Alertmanager receiver without external email')
+    attest=image.index('name: Attest bound release evidence using GitHub OIDC')
+    publish=image.index('name: customer-service-verified-oci-')
+    assert gate<attest<publish
+    assert "if: github.event_name == 'push'" in image[attest:publish]
+    assert 'subject-path: ${{ runner.temp }}/customer-service-release.json' in image[attest:publish]
