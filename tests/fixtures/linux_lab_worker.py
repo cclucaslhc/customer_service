@@ -26,7 +26,7 @@ def crash_with_lease(job):
     os.kill(os.getpid(),signal.SIGKILL)
 
 
-async def main(delay,mode='normal'):
+async def main(delay,mode='normal',otlp_endpoint=None):
     if socket.gethostname() not in ('cs-s2s6-node1','cs-s2s6-node2') or not Path('/var/lib/cs-lab-ready').is_file():
         raise RuntimeError('Owned disposable guest required')
     from app.runtime_files import read_database_url
@@ -62,9 +62,13 @@ async def main(delay,mode='normal'):
             if mode=='pre-dispatch-crash':
                 crash_with_lease(job)
             return await super()._execute(job,permit)
+    tracing=None
+    if otlp_endpoint is not None:
+        from app.otlp_export import PrivateOtlpTracing
+        tracing=PrivateOtlpTracing(otlp_endpoint)
     worker=FaultWorker(bundle,SecretStore(path=STATE/'master.key'),{
         'knowledge_dir':data/'docs','asset_dir':data/'assets','legacy_upload_dir':data/'legacy'},
-        gateway_factory=lambda credential,job:Gateway(job))
+        gateway_factory=lambda credential,job:Gateway(job),tracing=tracing)
     stop=asyncio.Event()
     for signum in (signal.SIGTERM,signal.SIGINT):
         asyncio.get_running_loop().add_signal_handler(signum,stop.set)
@@ -72,15 +76,19 @@ async def main(delay,mode='normal'):
         await worker.run(stop)
     finally:
         bundle.close()
+        if tracing is not None:
+            await asyncio.to_thread(tracing.flush,2)
+            await asyncio.to_thread(tracing.close)
 
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--delay',type=float,default=1)
     parser.add_argument('--mode',choices=('normal','pre-dispatch-crash','model-crash'),default='normal')
+    parser.add_argument('--otlp-traces-endpoint')
     try:
         args=parser.parse_args()
-        asyncio.run(main(args.delay,args.mode))
+        asyncio.run(main(args.delay,args.mode,args.otlp_traces_endpoint))
     except Exception as exc:
         print('Lab worker failed: '+type(exc).__name__,file=sys.stderr)
         raise SystemExit(1) from None

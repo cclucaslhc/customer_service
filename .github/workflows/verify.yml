@@ -89,6 +89,7 @@ jobs:
             tests/test_tracing_pg.py tests/test_redis_admission.py tests/test_rag_release_audit.py \
             tests/test_maintenance.py tests/test_rag_release_storage.py tests/test_rag_release_service.py tests/test_rag_rollout_storage.py tests/test_rag_rollout_service.py tests/test_rag_route_projection.py tests/test_run_rag_route.py tests/test_rag_routed_retrieval.py tests/test_rag_rollout_window_pg.py tests/test_rag_rollout_advance.py tests/test_rag_rollout_health.py \
             tests/test_rag_reversion.py tests/test_rag_backup_restore.py tests/test_model_usage.py tests/test_model_budget.py tests/test_model_cost.py \
+            tests/test_local_inference_usage.py tests/test_local_inference_metrics.py \
             --junitxml="$RUNNER_TEMP/postgres-redis-integration.xml"
           .venv/bin/python -c 'import xml.etree.ElementTree as ET, os; root=ET.parse(os.environ["RUNNER_TEMP"]+"/postgres-redis-integration.xml").getroot(); assert sum(int(node.get("skipped", "0")) for node in root.iter("testsuite")) == 0, "Integration tests skipped"'
       - name: Stop only this job's disposable services
@@ -227,4 +228,78 @@ jobs:
           docker run --rm -v "$RUNNER_TEMP:/scan" \
             docker.io/aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e \
             image --input /scan/customer-service-oci --scanners vuln \
-            --severity HIGH,CRITICAL --exit-code 1 --timeout 10m
+            --severity HIGH,CRITICAL --exit-code 1 --format json \
+            --output /scan/customer-service-vulnerabilities.json --timeout 10m
+      - name: Bind OCI, SBOM and passing scan into release evidence
+        run: |
+          .venv/bin/python ops/release/evidence.py create \
+            --oci "$RUNNER_TEMP/customer-service-image.oci.tar" \
+            --sbom "$RUNNER_TEMP/customer-service-sbom.cdx.json" \
+            --scan "$RUNNER_TEMP/customer-service-vulnerabilities.json" \
+            --manifest "$RUNNER_TEMP/customer-service-release.json"
+          .venv/bin/python -m pytest -q tests/test_release_evidence.py
+      - name: Build monitoring image with immutable Prometheus plugin
+        run: |
+          docker build --platform linux/amd64 --provenance=false \
+            -f ops/grafana/Dockerfile -t customer-service-grafana:verify .
+          docker save --output "$RUNNER_TEMP/grafana-image.tar" customer-service-grafana:verify
+      - name: Scan complete monitoring image before live queries
+        run: |
+          docker run --rm -v "$RUNNER_TEMP:/scan" \
+            docker.io/aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e \
+            image --input /scan/grafana-image.tar --scanners vuln \
+            --severity HIGH,CRITICAL --exit-code 1 --format json \
+            --output /scan/grafana-vulnerabilities.json --timeout 10m
+      - name: Verify real private metrics and all Grafana queries
+        run: |
+          .venv/bin/python scripts/verify_grafana.py \
+            --app-image customer-service:verify --grafana-image customer-service-grafana:verify
+      - name: Scan pinned Prometheus and Collector images
+        run: |
+          index=0
+          for monitoring_image in \
+            prom/prometheus@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2 \
+            otel/opentelemetry-collector-contrib@sha256:340c9ca6a36617084c6661bdc4f0fe92b7cda5a805d61673ec8db375fddc522b; do
+            index=$((index + 1))
+            docker run --rm -v "$RUNNER_TEMP:/scan" \
+              docker.io/aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e \
+              image --image-src remote --scanners vuln --severity HIGH,CRITICAL \
+              --exit-code 1 --format json --output "/scan/monitoring-$index-vulnerabilities.json" \
+              --timeout 10m "$monitoring_image"
+          done
+      - name: Verify real Collector privacy and outage recovery
+        run: .venv/bin/python scripts/verify_collector.py --app-image customer-service:verify
+      - name: Build and scan security-rebuilt Alertmanager
+        run: |
+          docker build --platform linux/amd64 --provenance=false \
+            -f ops/alertmanager/Dockerfile -t customer-service-alertmanager:verify .
+          docker save --output "$RUNNER_TEMP/alertmanager-image.tar" customer-service-alertmanager:verify
+          docker run --rm -v "$RUNNER_TEMP:/scan" \
+            docker.io/aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e \
+            image --input /scan/alertmanager-image.tar --scanners vuln --severity HIGH,CRITICAL \
+            --exit-code 1 --format json --output /scan/alertmanager-vulnerabilities.json --timeout 10m
+      - name: Verify real authenticated Alertmanager receiver without external email
+        run: |
+          docker create --name cs-alertmanager-binary-ci \
+            customer-service-alertmanager:verify
+          docker cp cs-alertmanager-binary-ci:/bin/alertmanager "$RUNNER_TEMP/alertmanager"
+          docker rm cs-alertmanager-binary-ci
+          chmod 755 "$RUNNER_TEMP/alertmanager"
+          TEST_ALERTMANAGER_PATH="$RUNNER_TEMP/alertmanager" \
+            .venv/bin/python -m pytest -q -rs tests/test_alert_receiver_integration.py \
+            --junitxml="$RUNNER_TEMP/private-alert-receiver.xml"
+          .venv/bin/python -c 'import xml.etree.ElementTree as ET, os; root=ET.parse(os.environ["RUNNER_TEMP"]+"/private-alert-receiver.xml").getroot(); assert sum(int(node.get("skipped", "0")) for node in root.iter("testsuite")) == 0, "Private receiver test skipped"'
+      # No production signing key is inferred or generated. The release owner
+      # signs this evidence with an explicitly approved identity outside PR CI.
+      # Upload only after application AND monitoring gates, never if: always().
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: customer-service-verified-oci-${{ github.sha }}
+          compression-level: 0
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/customer-service-image.oci.tar
+            ${{ runner.temp }}/customer-service-sbom.cdx.json
+            ${{ runner.temp }}/customer-service-vulnerabilities.json
+            ${{ runner.temp }}/customer-service-release.json
+          if-no-files-found: error

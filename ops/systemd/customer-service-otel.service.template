@@ -1,0 +1,29 @@
+[Unit]
+Description=Private customer service OpenTelemetry Collector
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+[Service]
+User=customer-service-otel
+Group=customer-service-otel
+ExecStart=/opt/customer-service-otel/otelcol-contrib --config=/etc/customer-service/otel-collector.yaml
+StateDirectory=customer-service-otel
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/customer-service-otel
+LogNamespace=customer-service
+[Install]
+WantedBy=multi-user.target

@@ -164,6 +164,11 @@ def test_isolated_migration_runtime_backup_roles_and_revocation(monkeypatch, tmp
             token = runtime.identity.login('synthetic.role.admin', SYNTHETIC_PASSWORD, tenant).token
             runtime.config.authenticated(token).initialize_tenant('2026-10-10T00:00:00+00:00')
             assert runtime.config.authenticated(token).active_provider()['provider'] == 'deepseek'
+            from app.local_inference_usage import AuditInferenceMeter
+            from app.rag_model_manifest import EMBEDDING_WEIGHT
+            meter=AuditInferenceMeter.for_knowledge(runtime.knowledge.authenticated(token),EMBEDDING_WEIGHT)
+            with meter.measure('embedding_query',1,1024) as observation:
+                observation.observe_tokens(17)
         finally:
             runtime.close()
         worker_runtime = PostgreSQLRepositories.from_url(role_url(worker), pool_size=1,
@@ -171,6 +176,9 @@ def test_isolated_migration_runtime_backup_roles_and_revocation(monkeypatch, tmp
         try:
             worker_runtime.check_schema()
             assert worker_runtime.identity.resolve(token).tenant_id == tenant
+            meter=AuditInferenceMeter.for_knowledge(worker_runtime.knowledge.authenticated(token),EMBEDDING_WEIGHT)
+            with meter.measure('rerank',1,1024) as observation:
+                observation.observe_tokens(23)
             with migrator_engine.begin() as db:
                 db.exec_driver_sql(f'GRANT SELECT (password_hash) ON public.identity_users TO "{worker}"')
             with pytest.raises(RuntimeError, match='Unsafe PostgreSQL application role'):

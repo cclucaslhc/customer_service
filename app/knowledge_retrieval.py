@@ -9,6 +9,9 @@ from typing import Protocol
 
 from app.rag_model_manifest import EMBEDDING_WEIGHT
 from app.tracing import operation_scope
+from app.identity import AuthenticationError,AuthorizationError
+from sqlalchemy.exc import SQLAlchemyError
+from app.local_inference_usage import LocalInferenceAccountingError
 
 
 @dataclass(frozen=True)
@@ -83,6 +86,8 @@ class RepositoryVectorRetriever:
         try:
             with operation_scope('rag.embed_query', rag_stage='embed_query'):
                 vector = self.embedding_gateway.encode([query], query=True)[0]
+        except (AuthenticationError,AuthorizationError,KnowledgeIndexChanged,SQLAlchemyError,LocalInferenceAccountingError):
+            raise
         except Exception as exc:
             raise RagModelUnavailable('Local query Embedding unavailable') from exc
         # The repository rechecks active status and current document version in

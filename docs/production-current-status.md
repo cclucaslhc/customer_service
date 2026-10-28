@@ -1,6 +1,10 @@
 # S2–S6当前交付边界
 
-更新：2026-10-27。这是当前摘要，历史批次与逐项证据保留在[验收记录](production-verification.md)，不以某组测试数代替阶段完成。目标仍为自管Linux双实例＋反向代理，默认DeepSeek、单Agent及独立ModelGateway。
+更新：2026-10-28。当前用户目标已收窄为 S2 收尾并提交，不再扩展 S3–S6；下文其他阶段保留为已有状态。历史批次与逐项证据保留在[验收记录](production-verification.md)，不以某组测试数代替阶段完成。架构仍为自管Linux双实例＋反向代理，默认DeepSeek、单Agent及独立ModelGateway。
+
+本轮最新收尾：后端584 passed/384 skipped，真实认证接收/取消保护7 passed；当前应用最终OCI重建逐blob一致、扫描0 HIGH/CRITICAL和SBOM/测试签名通过，Alertmanager安全重建也扫描0 HIGH/CRITICAL并通过Linux实际认证触发/恢复。用户已明确跳过真实外部告警送达，不再等待Gmail凭据；三通知接口保留。现有DeepSeek真实生成与用量已验证，但供应商账单/PG受保护真实调用、正式发布信任身份与远端CI仍未补齐。下段556为前批历史值，最终证据见[S2制品验收](s2-image-acceptance.md)。
+
+S2 最新：跨模块真实隔离集成 **175 passed / 0 skipped（284.91 秒）**；普通后端全量 **556 passed / 383 skipped（27.23 秒）**，固定本地权重计量另项通过。新增Grafana、journald权限/脱敏、Collector与API→Worker关联、本地推理计量/告警、应用r2重建/扫描/测试身份签名。Grafana固定插件制品、Prometheus3.15.1、Collector0.164.0均0 HIGH/CRITICAL；查询/浏览器/Collector故障恢复通过，node2已可回退升级并复验257 Span链路。正式值班渠道、供应商账单、正式发布身份及远端 CI 未验收；不宣布整个 S2 完成。逐项见 [S2 收尾清单](s2-completion-checklist.md)。
 
 最新运行增量：两VM已部署真实API/HTTPS及合成ChatWorker，跨guest Cookie/CSRF、入队/SSE/重放、API1停止时API2继续服务及API1恢复通过。Worker SIGKILL、运行中跨节点取消、主动断开未完成 SSE 并从另一节点续传也已有实测。私有 TLS LB 已验证固定入口的 GET 被动摘除与备节点完整对话。详见[运行验收](two-node-runtime-acceptance.md)。PG与LB仍单点、Redis尚未接入本批策略，不能勾选S3。
 

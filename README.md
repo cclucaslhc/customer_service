@@ -1,5 +1,9 @@
 # 云小智 AI 客服 MVP
 
+2026-10-28 后续：用户授权的现有DeepSeek配置已完成小量真实合成生成与用量获取；三种通知出站接口（企业微信/钉钉/邮箱）已形成，尚缺正式接收服务与Gmail凭据/送达。后端最新 **571 passed / 383 skipped**；新增模块后最终应用制品须重建，旧r2证据不覆盖全部新源码。用户已允许推送现有公开仓库，实际推送/CI与S2整体验收尚未完成。见[S2真实调用](docs/s2-deepseek-live-acceptance.md)及[通知接入](docs/alert-notification-operations.md)。
+
+2026-10-28 S2 收尾：隔离组件跨模块组 **175 passed / 0 skipped**，普通后端全量 **556 passed / 383 skipped**（跳过不计通过）。Grafana固定插件制品、Prometheus3.15.1和Collector0.164.0均扫描0 HIGH/CRITICAL，真实查询/Collector故障恢复通过；隔离VM的Collector已可回退升级并复验257 Span的API→Worker链路。已补日志/Collector部署、本地推理计量与告警、应用制品重建/测试身份签名。正式告警渠道、账单核验、发布信任身份及远端 CI 仍缺。**S2 尚未整体完成，当前没有第二笔完成提交，也不需要用户合并 main。**见 [S2 收尾清单](docs/s2-completion-checklist.md)。
+
 2026-10-25 制品与解析安全更新：已构建包含 Linux Landlock/seccomp 沙箱的完整镜像，复验六类文档与真实 PostgreSQL Worker CLI；修复新漏洞库发现的 pypdf 高危问题，锁定 6.21.2 后重建扫描为 0 HIGH/0 CRITICAL。生产知识 Worker 要求 Linux x86_64、Landlock ABI ≥ 5，领取任务前自检，不能满足则拒绝启动；Windows 仅作开发兼容。当前制品仍缺托管 CI/签名/跨宿主及正式双机验收，**不可据此上线**。见[解析隔离](docs/parser-isolation.md)和[最新验收证据](docs/production-verification.md)；下方旧批次数字不代表当前全量结果。
 
 2026-10-26 当前Schema head：`0037_rag_phase_clock`。默认PostgreSQL向量Worker已接run快照、受限候选检索、模型/Prompt绑定及锁内提交；已完成[合成浏览器/SSE验收](docs/rag-browser-acceptance.md)，已有[候选观察窗口](docs/rag-observation.md)与[受控阶段推进/最终提升内部事务](docs/rag-rollout-advance.md)。仍缺自动调度/异常动作、真实控制入口、自动回切及生产验收；新镜像未构建，旧0030镜像不可直接使用。升级须先暂停运行中灰度，恢复后旧审批需重审；API/Worker不可读写控制表。详见[灰度边界](docs/rag-rollouts.md)，其他限制见验收文档。

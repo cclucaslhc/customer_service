@@ -1,0 +1,39 @@
+# Operator template: provision the API OS account, immutable release symlink,
+# private credential files and approved data roots before installation.
+[Unit]
+Description=Customer service authenticated API
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=customer-service-api
+Group=customer-service-api
+WorkingDirectory=/opt/customer-service/current
+ExecStart=/opt/customer-service/current/.venv/bin/python scripts/serve_api.py --database-url-file /etc/customer-service/api-db-url --master-key-path /etc/customer-service/wrapping-key --origin @CANONICAL_HTTPS_ORIGIN@ --knowledge-root /var/lib/customer-service/knowledge --asset-root /var/lib/customer-service/assets --legacy-root /var/lib/customer-service/legacy --storage-policy /etc/customer-service/storage-policy.json --json-http-logs --metrics-token-file /etc/customer-service/metrics-token --metrics-port 9107 --otlp-traces-endpoint http://127.0.0.1:4318/v1/traces
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+LogNamespace=customer-service
+SyslogIdentifier=customer-service-api
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/customer-service
+
+[Install]
+WantedBy=multi-user.target

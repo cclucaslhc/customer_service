@@ -1,0 +1,23 @@
+{
+  "uid": "customer-service-s2",
+  "title": "Customer service — S2 operations",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "timezone": "utc",
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "tags": ["customer-service", "s2"],
+  "templating": {"list": [
+    {"name": "datasource", "type": "datasource", "query": "prometheus"},
+    {"name": "aggregate_instance", "label": "Single shared-DB aggregate target", "type": "query", "datasource": {"type": "prometheus", "uid": "$datasource"}, "query": "label_values(customer_service_model_budget_collection_success{job=\"customer-service-private\"}, instance)", "refresh": 1, "multi": false, "includeAll": false}
+  ]},
+  "panels": [
+    {"id": 1, "title": "Scrape health by instance", "type": "stat", "gridPos": {"x": 0, "y": 0, "w": 12, "h": 6}, "datasource": {"type": "prometheus", "uid": "$datasource"}, "targets": [{"refId": "A", "expr": "up{job=\"customer-service-private\"}", "legendFormat": "{{instance}}"}], "fieldConfig": {"defaults": {"min": 0, "max": 1, "noValue": "NO DATA — investigate"}, "overrides": []}},
+    {"id": 2, "title": "HTTP P95 (not model TTFT or SSE connection duration)", "type": "timeseries", "gridPos": {"x": 12, "y": 0, "w": 12, "h": 6}, "datasource": {"type": "prometheus", "uid": "$datasource"}, "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(customer_service_http_request_duration_seconds_bucket{job=\"customer-service-private\"}[$__rate_interval])))"}], "fieldConfig": {"defaults": {"unit": "s", "noValue": "NO DATA"}, "overrides": []}},
+    {"id": 3, "title": "Budget evidence health (selected aggregate only)", "type": "stat", "gridPos": {"x": 0, "y": 6, "w": 12, "h": 6}, "datasource": {"type": "prometheus", "uid": "$datasource"}, "targets": [{"refId": "A", "expr": "customer_service_model_budget_collection_success{job=\"customer-service-private\",instance=\"$aggregate_instance\"}"}], "fieldConfig": {"defaults": {"min": 0, "max": 1, "noValue": "NO DATA — NOT HEALTHY", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "gray", "value": null}, {"color": "red", "value": 0}, {"color": "green", "value": 1}]}}, "overrides": []}},
+    {"id": 4, "title": "Hard budget rejections / second (not currency spend)", "type": "timeseries", "gridPos": {"x": 12, "y": 6, "w": 12, "h": 6}, "datasource": {"type": "prometheus", "uid": "$datasource"}, "targets": [{"refId": "A", "expr": "rate(customer_service_model_budget_rejections_total{job=\"customer-service-private\",instance=\"$aggregate_instance\"}[$__rate_interval])", "legendFormat": "{{reason}}"}], "fieldConfig": {"defaults": {"unit": "ops", "noValue": "NO DATA"}, "overrides": []}},
+    {"id": 5, "title": "HTTP log delivery outcomes / second", "type": "timeseries", "gridPos": {"x": 0, "y": 12, "w": 12, "h": 6}, "datasource": {"type": "prometheus", "uid": "$datasource"}, "targets": [{"refId": "A", "expr": "sum by (outcome) (rate(customer_service_http_log_records_total{job=\"customer-service-private\"}[$__rate_interval]))", "legendFormat": "{{outcome}}"}], "fieldConfig": {"defaults": {"unit": "ops", "noValue": "NO DATA"}, "overrides": []}},
+    {"id": 6, "title": "Trace exporter outcomes / second", "type": "timeseries", "gridPos": {"x": 12, "y": 12, "w": 12, "h": 6}, "datasource": {"type": "prometheus", "uid": "$datasource"}, "targets": [{"refId": "A", "expr": "sum by (outcome) (rate(customer_service_trace_spans_total{job=\"customer-service-private\"}[$__rate_interval]))", "legendFormat": "{{outcome}}"}], "fieldConfig": {"defaults": {"unit": "ops", "noValue": "NO DATA"}, "overrides": []}}
+  ]
+}

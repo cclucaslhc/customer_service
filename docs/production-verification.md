@@ -1,5 +1,17 @@
 # 生产化实施与验收记录
 
+## 2026-10-28 S2 收尾复验
+
+最新增量：显式授权管理界面DeepSeek配置后，真实合成生成成功，input21/output3、requests1；首次探针usage属性调用错误造成取证缺失，不伪造其用量/费用，保留可能计费未知。三通知出站适配器及离线回归13 passed，后端全量 **571 passed / 383 skipped（32.37秒）**。Gmail正式凭据/送达与PG受保护收费链路尚缺；用户已授权推送现有公开仓库，但未据此宣称CI已运行。新增应用模块使最终制品需重新构建，历史r2扫描不覆盖新增源码。
+
+本轮最终普通后端全量 **556 passed / 383 skipped，27.23秒**，Collector/Grafana/供应链/签名专项24 passed，CI最终步骤顺序变动后5 passed；组重叠不累加。Prometheus3.15.1和Collector0.164.0固定镜像补扫0 HIGH/CRITICAL；新版真实六面板查询及Collector故障恢复通过，node2可回退升级后Run `68e8445b-d0af-4927-8a53-31b5f37d9dee`的257 Span全链关联再次通过。CI将最终制品上传放在应用和监控所有门禁之后，但没有远端执行证据。下文552/549均为前批历史计数。
+
+后续修复：Grafana已形成官方13.2.5 distroless-slim＋固定SHA256 Prometheus插件制品，禁用运行时插件自动下载，严格复扫0 HIGH/CRITICAL（含真实可执行backend）；六面板查询/浏览器、401与缺数据灰色NOT HEALTHY通过。manifest `sha256:1b03b2eb88da8ff5c4994742070cfcffd9b7fdde2a6fcd27727d7f88219255d8`，详见 [Grafana验收](s2-grafana-acceptance.md)。新增CI构建/扫描/真实查询门禁及契约回归16 passed；普通后端最新 **552 passed / 383 skipped，27.90秒**，下段549为前批历史值。旧12.3.1合成测试栈已精确移除，保留仓库外历史证据，新修复栈接替；没有删除业务数据。
+
+显式接入隔离 PostgreSQL/Redis/S3/Prometheus/Alertmanager/本地权重目录的 S2 跨模块选定组：**175 passed / 0 skipped，284.91 秒**。报告保存于仓库外 `D:/codex_project/customer_service_vm_lab_20261026/s2-final-integration-20261028.xml`。普通后端全量另为 **549 passed / 383 skipped（29.57 秒）**；固定本地权重计量另项 **1 passed（18.78 秒）**，各组不得相加为一次全量。
+
+应用 r2 0 HIGH/CRITICAL、独立空缓存 OCI 逐 blob 重建一致及测试身份签名/篡改拒绝通过；正式发布身份/远端 CI 不在此证明范围。Grafana 旧12.3.1与本次解析的官方 latest 固定摘要均未过 HIGH/CRITICAL 安全门禁，未部署替换或豁免。后者发现 Go stdlib、x/net 及 Tempo 依赖的 HIGH，不能仅靠升级基础 OS 消除。真实渠道/账单及生产容量仍缺；S2 整体未勾选完成。详细边界见 [S2 清单](s2-completion-checklist.md)及 [Grafana验收](s2-grafana-acceptance.md)。
+
 2026-10-26 S6阶段推进/最终提升内部事务：head仍0037。advance在发布锁内重采样PG窗口、复查冻结计划/版本/审批/质量/索引，只推进一步；最终激活、审批executed、rollout completed及审计同事务。初版5 passed（22.54秒）；加最终期限复查后扩大15 passed（52.39秒），无外部服务426 passed/352 skipped（25.66秒），组重叠不累加。没有自动调度/失败动作或真实控制HTTP入口，合成1秒/1请求及手写费用不作真实质量/费用/负载证明；新镜像、完整恢复、真实业务与双机仍未完成。见[边界及证据](rag-rollout-advance.md)。
 
 2026-10-26 当前head0037：新增owner只读候选观察窗口和数据库阶段时钟，按tenant/rollout/路由version/候选index隔离，NULL费用不忽略、每轮累加所有attempt再取最大值；pending、未知费用、上下文或时间异常均阻止通过。计划/观察单元+真实PG观察/控制/存储39 passed（35.43秒），静态18 passed，本地426 passed/347 skipped（30.41秒），组重叠不累加。observe不接受外传统计、不改流量，阶段推进/最终提升尚未实现；迁移必须先暂停running灰度，旧镜像/完整恢复/生产质量及双机验收仍缺。见[窗口边界](rag-observation.md)。

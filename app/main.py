@@ -154,6 +154,8 @@ def create_app(*, repositories=None, secret_store=None, knowledge_paths=None, au
         from app.model_circuit_metrics import ModelCircuitMetrics
         app.state.http_telemetry.budget_metrics = ModelBudgetMetrics(repositories.engine)
         app.state.http_telemetry.circuit_metrics = ModelCircuitMetrics(repositories.engine)
+        from app.local_inference_metrics import LocalInferenceMetrics
+        app.state.http_telemetry.local_inference_metrics = LocalInferenceMetrics(repositories.engine)
     app.state.private_metrics_port = None
 
     @app.exception_handler(ObjectStoreError)

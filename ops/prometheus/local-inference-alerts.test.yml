@@ -1,0 +1,54 @@
+rule_files:
+  - local-inference-alerts.yml
+evaluation_interval: 30s
+tests:
+  - interval: 30s
+    input_series:
+      - series: 'up{job="customer-service-private"}'
+        values: '1+0x16'
+      - series: 'customer_service_local_inference_collection_success{job="customer-service-private"}'
+        values: '0 0 0 0 0 1+0x11'
+      - series: 'customer_service_local_inference_collection_timestamp_seconds{job="customer-service-private"}'
+        values: '0+30x16'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: CustomerServiceLocalInferenceCollectionUnavailable
+        exp_alerts:
+          - exp_labels:
+              job: customer-service-private
+              severity: critical
+              owner: platform-oncall
+            exp_annotations:
+              summary: Local inference evidence collection is missing, failed or stale
+              runbook: docs/s2-local-inference-accounting.md
+      - eval_time: 3m
+        alertname: CustomerServiceLocalInferenceCollectionUnavailable
+        exp_alerts: []
+  - interval: 30s
+    input_series:
+      - series: 'up{job="customer-service-private"}'
+        values: '1+0x16'
+      - series: 'customer_service_local_inference_collection_success{job="customer-service-private"}'
+        values: '1+0x16'
+      - series: 'customer_service_local_inference_collection_timestamp_seconds{job="customer-service-private"}'
+        values: '0+30x16'
+      - series: 'customer_service_local_inference_stale_unresolved{job="customer-service-private",purpose="embedding_document"}'
+        values: '1 1 1 1 1 0+0x11'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: CustomerServiceLocalInferenceUnresolved
+        exp_alerts:
+          - exp_labels:
+              job: customer-service-private
+              purpose: embedding_document
+              severity: warning
+              owner: service-oncall
+            exp_annotations:
+              summary: Local inference has receipts older than five minutes without a confirmed terminal state
+              runbook: docs/s2-local-inference-accounting.md
+      - eval_time: 3m
+        alertname: CustomerServiceLocalInferenceUnresolved
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: CustomerServiceLocalInferenceCollectionUnavailable
+        exp_alerts: []

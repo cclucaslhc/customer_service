@@ -40,6 +40,10 @@ class RagIndexWorker:
         self.tenant_id = uuid.UUID(str(tenant_id))
         self.profile_id = uuid.UUID(str(profile_id))
         self.embedding_gateway = embedding_gateway
+        from app.rag_local import LocalEmbeddingGateway
+        if isinstance(embedding_gateway,LocalEmbeddingGateway):
+            from app.local_inference_usage import AuditInferenceMeter
+            self.embedding_gateway=embedding_gateway.with_meter(AuditInferenceMeter.for_index_worker(self,EMBEDDING_WEIGHT))
 
     def _check_profile(self, db):
         profiles = metadata.tables['embedding_profiles']
