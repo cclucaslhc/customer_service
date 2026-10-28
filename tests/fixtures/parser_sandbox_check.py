@@ -7,7 +7,8 @@ import socket
 import tempfile
 import sys
 
-sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
+source_root=Path(__file__).resolve().parent.parent.parent
+if (source_root/'app').is_dir(): sys.path.insert(0,str(source_root))
 
 from app.parser_sandbox import restrict_parser
 
