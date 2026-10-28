@@ -1,5 +1,7 @@
 # S2–S6当前交付边界
 
+2026-10-29当前验收口径：真实外部告警送达和真实账单对账已由用户明确豁免，不再作为本轮待提供资源；仍保留“未验证”，不是通过。最新S2集成192 passed/0 skipped、应用OCI重建/扫描通过；GitHub真实CI已推进到独立OCI构建器修复，尚未最终全绿或main收尾提交。以下历史“未提供渠道/账单”不覆盖该决定，权威状态见[最终验收账本](s2-final-acceptance.md)。
+
 更新：2026-10-28。当前用户目标已收窄为 S2 收尾并提交，不再扩展 S3–S6；下文其他阶段保留为已有状态。历史批次与逐项证据保留在[验收记录](production-verification.md)，不以某组测试数代替阶段完成。架构仍为自管Linux双实例＋反向代理，默认DeepSeek、单Agent及独立ModelGateway。
 
 本轮最新收尾：后端584 passed/384 skipped，真实认证接收/取消保护7 passed；当前应用最终OCI重建逐blob一致、扫描0 HIGH/CRITICAL和SBOM/测试签名通过，Alertmanager安全重建也扫描0 HIGH/CRITICAL并通过Linux实际认证触发/恢复。用户已明确跳过真实外部告警送达，不再等待Gmail凭据；三通知接口保留。现有DeepSeek真实生成与用量已验证，但供应商账单/PG受保护真实调用、正式发布信任身份与远端CI仍未补齐。下段556为前批历史值，最终证据见[S2制品验收](s2-image-acceptance.md)。

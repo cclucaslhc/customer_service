@@ -55,6 +55,17 @@ def test_binding_check_for_oidc_authenticated_manifest_rejects_changed_artifact(
         release.check_binding(manifest,image,sbom,scan)
 
 
+def test_oidc_manifest_requires_explicit_matching_trust_policy(evidence,tmp_path):
+    image,sbom,scan,_,_,_,_,digest=evidence
+    manifest=tmp_path/'oidc.json'
+    release.create(image,sbom,scan,manifest,signature_policy='github-oidc-slsa-v1')
+    with pytest.raises(ValueError,match='Artifact bytes differ'):
+        release.check_binding(manifest,image,sbom,scan)
+    assert release.check_binding(manifest,image,sbom,scan,signature_policy='github-oidc-slsa-v1')==digest
+    with pytest.raises(ValueError,match='Ed25519 signature policy'):
+        release.sign(manifest,tmp_path/'nonexistent-key.pem',tmp_path/'unused.sig')
+
+
 def test_signature_rejects_modified_manifest_bytes(evidence):
     image,sbom,scan,manifest,signature,public,pin,_=evidence
     manifest.write_bytes(manifest.read_bytes()+b' ')

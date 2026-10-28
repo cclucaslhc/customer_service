@@ -42,7 +42,9 @@ def digest_file(path):
     return {'sha256':digest.hexdigest(),'bytes':size}
 
 
-def build_evidence(oci,sbom,scan):
+def build_evidence(oci,sbom,scan,*,signature_policy='explicit-pinned-ed25519-v1'):
+    if signature_policy not in {'explicit-pinned-ed25519-v1','github-oidc-slsa-v1'}:
+        raise ValueError('Explicit supported signature policy required')
     subject=image_digest(Path(oci)) # Verify every OCI descriptor's actual bytes.
     with tarfile.open(oci,'r:*') as archive:
         manifest=json.load(archive.extractfile('blobs/sha256/'+subject[7:]))
@@ -63,11 +65,11 @@ def build_evidence(oci,sbom,scan):
         raise ValueError('Unresolved high or critical vulnerabilities')
     return {'format':'customer-service-release-evidence-v1','oci_manifest':subject,'oci_config':config,
         'artifacts':{'oci':digest_file(oci),'sbom':digest_file(sbom),'scan':digest_file(scan)},
-        'scan_gate':'HIGH_CRITICAL_ZERO','signature_policy':'explicit-pinned-ed25519-v1'}
+        'scan_gate':'HIGH_CRITICAL_ZERO','signature_policy':signature_policy}
 
 
-def create(oci,sbom,scan,output):
-    evidence=build_evidence(oci,sbom,scan)
+def create(oci,sbom,scan,output,*,signature_policy='explicit-pinned-ed25519-v1'):
+    evidence=build_evidence(oci,sbom,scan,signature_policy=signature_policy)
     with Path(output).open('xb') as destination:
         destination.write(json.dumps(evidence,sort_keys=True,separators=(',',':')).encode())
     return evidence['oci_manifest']
@@ -94,6 +96,8 @@ def sign(manifest,key_file,signature_file):
     payload=bounded(manifest,16384)
     document=json.loads(payload)
     if document.get('format')!='customer-service-release-evidence-v1': raise ValueError('Unknown evidence format')
+    if document.get('signature_policy')!='explicit-pinned-ed25519-v1':
+        raise ValueError('Ed25519 signature policy required')
     key=private_key(key_file)
     envelope={'format':'customer-service-ed25519-signature-v1','key_sha256':fingerprint(key.public_key()),
         'signature':base64.b64encode(key.sign(payload)).decode()}
@@ -102,9 +106,9 @@ def sign(manifest,key_file,signature_file):
     return envelope['key_sha256']
 
 
-def check_binding(manifest,oci,sbom,scan):
+def check_binding(manifest,oci,sbom,scan,*,signature_policy='explicit-pinned-ed25519-v1'):
     """Byte binding only. Caller must separately authenticate the manifest."""
-    expected=build_evidence(oci,sbom,scan)
+    expected=build_evidence(oci,sbom,scan,signature_policy=signature_policy)
     if json.loads(bounded(manifest,16384))!=expected:
         raise ValueError('Artifact bytes differ from release evidence')
     return expected['oci_manifest']
@@ -132,6 +136,9 @@ def main():
         child=commands.add_parser(action)
         for name in ('oci','sbom','scan','manifest'):
             child.add_argument('--'+name,type=Path,required=True)
+        if action in ('create','check-binding'):
+            child.add_argument('--signature-policy',choices=('explicit-pinned-ed25519-v1','github-oidc-slsa-v1'),
+                default='explicit-pinned-ed25519-v1')
         if action=='verify':
             child.add_argument('--signature',type=Path,required=True)
             child.add_argument('--public-key',type=Path,required=True)
@@ -139,9 +146,9 @@ def main():
     child=commands.add_parser('sign')
     for name in ('manifest','key-file','signature'): child.add_argument('--'+name,type=Path,required=True)
     args=parser.parse_args()
-    if args.action=='create': value=create(args.oci,args.sbom,args.scan,args.manifest)
+    if args.action=='create': value=create(args.oci,args.sbom,args.scan,args.manifest,signature_policy=args.signature_policy)
     elif args.action=='sign': value=sign(args.manifest,args.key_file,args.signature)
-    elif args.action=='check-binding': value=check_binding(args.manifest,args.oci,args.sbom,args.scan)
+    elif args.action=='check-binding': value=check_binding(args.manifest,args.oci,args.sbom,args.scan,signature_policy=args.signature_policy)
     else: value=verify(args.manifest,args.signature,args.public_key,args.trusted_key_sha256,args.oci,args.sbom,args.scan)
     print(args.action+' verified: '+value)
 

@@ -72,3 +72,6 @@ def test_grafana_artifact_pins_plugin_and_disables_runtime_downloads():
     assert 'chmod 0555 /plugins/prometheus/gpx_grafana-prometheus-datasource_linux_amd64' in source
     assert 'ADD --checksum=sha256:d24df3eaff9ae61f00d7e857f508fc306912dcf50d657150d1e472e851799fc4 https://grafana.com/api/plugins/prometheus/versions/13.2.5/download?os=linux&arch=amd64' in source
     assert source.rstrip().endswith('USER 472')
+    assert 'go get github.com/go-jose/go-jose/v4@v4.1.6 && go mod verify' in source
+    assert 'GOSUMDB=sum.golang.org' in source
+    assert 'COPY --from=server /out/grafana /usr/share/grafana/bin/grafana' in source

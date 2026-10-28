@@ -244,6 +244,7 @@ jobs:
       - name: Bind OCI, SBOM and passing scan into release evidence
         run: |
           .venv/bin/python ops/release/evidence.py create \
+            --signature-policy github-oidc-slsa-v1 \
             --oci "$RUNNER_TEMP/customer-service-image.oci.tar" \
             --sbom "$RUNNER_TEMP/customer-service-sbom.cdx.json" \
             --scan "$RUNNER_TEMP/customer-service-vulnerabilities.json" \
@@ -256,6 +257,7 @@ jobs:
           docker save --output "$RUNNER_TEMP/grafana-image.tar" customer-service-grafana:verify
       - name: Scan complete monitoring image before live queries
         run: |
+          trap 'python3 ops/release/scan_summary.py "$RUNNER_TEMP/grafana-vulnerabilities.json"' EXIT
           docker run --rm -v "$RUNNER_TEMP:/scan" \
             docker.io/aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e \
             image --input /scan/grafana-image.tar --scanners vuln \

@@ -1,6 +1,6 @@
 # 云小智 AI 客服 MVP
 
-2026-10-28 后续：用户授权的现有DeepSeek配置已完成小量真实合成生成与用量获取；三种通知出站接口（企业微信/钉钉/邮箱）已形成，尚缺正式接收服务与Gmail凭据/送达。后端最新 **571 passed / 383 skipped**；新增模块后最终应用制品须重建，旧r2证据不覆盖全部新源码。用户已允许推送现有公开仓库，实际推送/CI与S2整体验收尚未完成。见[S2真实调用](docs/s2-deepseek-live-acceptance.md)及[通知接入](docs/alert-notification-operations.md)。
+2026-10-29：S2最终验收进行中。OTel已升级1.45.1、Vite8.3.5；前端40项测试/构建及漏洞审计通过，本机S2真实组件集成192 passed/0 skipped；最新应用OCI独立重建一致、扫描0 HIGH/CRITICAL。GitHub验收分支已推送，后端/前端/NGINX通过，PG/Redis及最终制品/OIDC门禁仍在核对。**真实外部告警送达与真实账单对账已由用户明确跳过，保留未验证记录，不再等待Gmail凭据。**最终Git收尾与全绿前不宣布S2完成，也不代表整体可上线。详见[最终验收账本](docs/s2-final-acceptance.md)。下文带日期的旧段落是历史批次，不替代该账本。
 
 2026-10-28 S2 收尾：隔离组件跨模块组 **175 passed / 0 skipped**，普通后端全量 **556 passed / 383 skipped**（跳过不计通过）。Grafana固定插件制品、Prometheus3.15.1和Collector0.164.0均扫描0 HIGH/CRITICAL，真实查询/Collector故障恢复通过；隔离VM的Collector已可回退升级并复验257 Span的API→Worker链路。已补日志/Collector部署、本地推理计量与告警、应用制品重建/测试身份签名。正式告警渠道、账单核验、发布信任身份及远端 CI 仍缺。**S2 尚未整体完成，当前没有第二笔完成提交，也不需要用户合并 main。**见 [S2 收尾清单](docs/s2-completion-checklist.md)。
 

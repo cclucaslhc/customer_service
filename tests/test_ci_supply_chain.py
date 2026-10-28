@@ -73,6 +73,7 @@ def test_oidc_attestation_is_scoped_after_all_gates_and_before_final_publication
     assert gate<attest<publish
     assert "if: github.event_name == 'push'" in image[attest:publish]
     assert 'subject-path: ${{ runner.temp }}/customer-service-release.json' in image[attest:publish]
+    assert '--signature-policy github-oidc-slsa-v1' in image[:attest]
 
 
 def test_oci_export_uses_two_separate_pinned_container_builders():
