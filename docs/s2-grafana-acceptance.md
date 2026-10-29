@@ -46,3 +46,11 @@
 - Grafana/Collector/日志平台整合、留存策略及值班送达；真实账单与其他 S2 清单仍独立验收。
 
 因此本轮仅将“无可导入/执行/显示的仪表盘”缺口推进为已具备可重复实机证据，不勾选完整 S2，也不提交宣称 S2 完成的第二笔 Git。
+
+## 2026-10-29 新漏洞库修复复验
+
+远端CI检出主程序go-jose/v4 4.1.4的CVE-2026-116587，故此前扫描通过不代表新库通过。现从官方13.2.5固定commit `ce471d869a4810cd83c987dd3521c4b67689dbb6`重建服务端，升级至4.1.6；源码SHA256和Go checksum数据库验证均开启，保留官方UI及固定签名插件。下游版本为13.2.5+cs.s2，不冒充未改动官方制品。
+
+修复镜像manifest `sha256:9e74d012bebb72e982a1da7888d5886b01539b2b5fc4eed9f5b56f751af29aa3`，config `sha256:648ec7c55d4377b6765fcce160ae59b2072f384abf71df4971493a24a8d3e239`。完整归档新库扫描exit0、0 HIGH/CRITICAL，报告为实验室`s2-r2-output-20261028/grafana-security-vulnerabilities-20261029.json`。成功功能批次`cs-s2-grafana-7515f0e73b4d`，回环54789：六查询、up/P95样本、匿名401及浏览器渲染通过；缺失预算保持空值。JSON证据在仓库外临时目录`cs-s2-grafana-7515f0e73b4d-u0q8dp4h`。
+
+远端40788755603已完成安全重建和0 HIGH/CRITICAL扫描，但实际数据源检查失败。Linux下mkdtemp目录0700使默认非root Prometheus无法读取目录整体挂载中的配置；真实Linux volume重现permission denied。改为单独绑定合成prometheus.yml及metrics-token到镜像已有/etc/prometheus路径，两文件只读、父证据目录保持0700、镜像默认非root用户不变。真实Linux权限探针新挂载启动通过；完整六查询/401复验批次`cs-s2-grafana-72946067cf6d`通过，证据目录`cs-s2-grafana-72946067cf6d-k2v9txvw`。这不是通过延长超时或改root掩盖故障，新CI仍待运行。

@@ -1,5 +1,7 @@
 # S2 私有 Collector 实机证据
 
+2026-10-29 CI权限补验：Docker默认Collector UID10001与Linux宿主私有0700输出目录所有者不匹配。脚本现于POSIX显式使用同一非root宿主UID/GID，拒绝root调用；Windows继续默认镜像身份。没有改宽目录权限或使用root Collector。真实Linux volume重现旧UID permission denied，新UID1001在0700目录持久化三层真实Span（exported3/failed0）；首次过早检查空输出文件失败保留，实际producer触发后才算通过。完整Collector过滤/暂停恢复再次通过，仓库外证据`cs-s2-collector-b8277f73969e-faubpwvj`；新CI仍待验证。
+
 ## 当前版本增量（优先于下述0.140.0历史记录）
 
 官方Collector0.164.0固定摘要 `sha256:340c9ca6a36617084c6661bdc4f0fe92b7cda5a805d61673ec8db375fddc522b` 已由固定Trivy完整扫描exit0、0 HIGH/CRITICAL；报告为实验室 `s2-r2-output-20261028/collector-current-vulnerabilities.json`。新版实际校验现有配置、三层Span关联、隐私过滤、pause时3项导出失败及恢复后新trace落盘均通过，证据 `C:/Users/56226/AppData/Local/Temp/cs-s2-collector-7a31f74ef45e-yl2iwkfa/`。脚本现必须显式指定 `--app-image`，不再自动复用旧应用镜像。

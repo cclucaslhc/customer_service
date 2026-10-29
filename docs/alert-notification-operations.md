@@ -10,11 +10,11 @@
 
 发送适配器本身不自动重试，但Alertmanager可能对503/超时重试并产生重复邮件。没有持久化通知去重或exactly-once承诺；发送失败保留未知并计数，不能据此自动重放业务操作。生产70秒接收超时仍需真实邮件链路验证，本轮已被用户豁免。
 
-更新：2026-10-28。用户确认保留企业微信、钉钉、邮箱三个接入，先启用 Gmail 邮箱；真实收件地址只进入受控运行配置，不写本文档、测试或日志。
+更新：2026-10-29。用户确认保留企业微信、钉钉、邮箱三个接入，随后明确跳过本轮真实外部告警送达验证；不再等待Gmail凭据或继续OAuth。真实联系方式不写本文档、测试或日志。跳过为用户豁免，不能记为送达通过。
 
 ## 当前交付与边界
 
-`app/alert_notifications.py` 提供 `send_wecom`、`send_dingtalk`、`send_email` 三个出站接口。它们还不是公开HTTP接口，也不是已部署的Alertmanager接收服务。正式接收端必须认证Alertmanager、限制请求体和并发，并仅从受控配置选择目的地，禁止由入站载荷指定URL/收件人。
+`app/alert_notifications.py` 提供 `send_wecom`、`send_dingtalk`、`send_email` 三个出站接口，不是公开HTTP接口。`app/alert_receiver.py`及`scripts/serve_alert_receiver.py`提供显式启动的私有接收服务：回环peer/Host/Bearer鉴权，64KiB请求上限、单组最多32实例、单一真实在途发送；取消请求不会提前释放仍在运行的SMTP线程。只从受控配置选择目的地，禁止由入站载荷指定URL/收件人。模板见`ops/prometheus/alertmanager-notifications.yml.template`；没有自动启用真实通知。
 
 只发送仓库规则中注册的告警名称与firing/resolved状态，不发送原始labels、annotations、租户、用户、文档、模型Prompt、日志或异常内容。规则名新增时必须同步注册表及测试。provider_accepted仅表示供应商接受，不表示收件人已读；正式验收仍需用户确认收到触发及恢复通知。
 
@@ -24,8 +24,8 @@
 
 机器人响应有16KiB限制，非0 errcode/非200拒绝；网络异常保留delivery_unknown且不自动重试。邮件网络/提交异常同样保留未知，不把超时当作未发出；任何上游重试均可能造成重复通知，不能宣称exactly-once。密钥、签名URL与SMTP密码不进入安全错误文本。
 
-## Gmail 待配置
+## 后续可选 Gmail 配置（本轮不要求）
 
 使用 `smtp.gmail.com:465`。Gmail账户通常需要由用户启用两步验证，并生成可撤销的应用专用密码；不能在聊天中提供密码，也不将普通登录密码用于SMTP。组织账户若禁用应用密码，应由管理员批准OAuth或受控邮件中继，不关闭TLS来绕过。
 
-当前没有发信凭据、接收端部署或真实邮件送达证据；测试只用example.invalid合成地址和离线传输。待完成受控配置入口、Alertmanager接线、真实firing/resolved送达及恢复验收后，才可勾选正式渠道。
+已实现加密本机配置及回环安全入口，但用户取消后8011配置服务已停止。没有真实邮件送达证据，不要求用户继续提供密码。真实原生Linux Alertmanager→当前认证receiver→合成callback的firing/resolved协议已通过；这不是向邮箱或机器人实际送达。provider_accepted、receiver存活和合成测试均不等于收件确认。后续要启用真实通知，仍需用户安全提供独立凭据、批准目标并另验触发/恢复送达。

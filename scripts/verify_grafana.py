@@ -13,6 +13,17 @@ ROOT=Path(__file__).resolve().parents[1]
 PROMETHEUS='prom/prometheus@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2'
 
 
+def prometheus_mounts(folder):
+    # mkdtemp is 0700 on Linux. Mounting the whole evidence directory prevents
+    # the image's non-root Prometheus user from traversing it. Bind only these
+    # synthetic 0644 files; keep the host evidence directory private and leave
+    # the image's non-root UID/storage permissions unchanged.
+    return [argument for source,target in (
+        ('prometheus.yml','/etc/prometheus/prometheus.yml'),
+        ('metrics-token','/etc/prometheus/metrics-token'),
+    ) for argument in ('--mount',f'type=bind,source={folder/source},target={target},readonly')]
+
+
 def docker(*args):
     result=subprocess.run(['docker',*map(str,args)],capture_output=True,text=True,timeout=60)
     if result.returncode:
@@ -42,7 +53,7 @@ def main(app_image,grafana_image,keep=False):
         (folder/'metrics-token').write_text(token,encoding='utf-8')
         (folder/'prometheus.yml').write_text('global:\n  scrape_interval: 1s\n'
             'scrape_configs:\n  - job_name: customer-service-private\n'
-            '    authorization:\n      credentials_file: /evidence/metrics-token\n'
+            '    authorization:\n      credentials_file: /etc/prometheus/metrics-token\n'
             '    static_configs:\n      - targets: ["127.0.0.1:9107"]\n',encoding='utf-8')
         # Dedicated bridge; only Grafana is published, strictly to host loopback.
         # Docker's internal-network mode suppresses that published endpoint on
@@ -59,10 +70,10 @@ def main(app_image,grafana_image,keep=False):
             '--env','GF_ANALYTICS_REPORTING_ENABLED=false','--env','GF_ANALYTICS_CHECK_FOR_UPDATES=false',grafana_image)
         names.append(grafana)
         for name,image,arguments in (
-            (prefix+'-prom',PROMETHEUS,['--config.file=/evidence/prometheus.yml','--web.listen-address=127.0.0.1:9090','--storage.tsdb.retention.time=1h']),
+            (prefix+'-prom',PROMETHEUS,['--config.file=/etc/prometheus/prometheus.yml','--web.listen-address=127.0.0.1:9090','--storage.tsdb.retention.time=1h']),
             (prefix+'-metrics',app_image,['/opt/customer-service/.venv/bin/python','/fixture.py']),
         ):
-            mounts=(['--mount',f'type=bind,source={folder},target=/evidence,readonly'] if image==PROMETHEUS else
+            mounts=(prometheus_mounts(folder) if image==PROMETHEUS else
                 ['--mount',f'type=bind,source={ROOT / "tests/fixtures/grafana_metrics.py"},target=/fixture.py,readonly',
                  '--mount',f'type=bind,source={ROOT / "app"},target=/opt/customer-service/app,readonly',
                  '--env','PYTHONPATH=/opt/customer-service'])

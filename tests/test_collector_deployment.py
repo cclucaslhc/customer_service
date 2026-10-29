@@ -7,6 +7,18 @@ from app.tracing import _ATTRS,_NAMES
 import importlib.util
 import pytest
 
+
+def test_collector_private_output_uses_matching_non_root_host_identity(monkeypatch):
+    spec=importlib.util.spec_from_file_location('collector_identity',ROOT/'scripts/verify_collector.py')
+    module=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module.os,'getuid',lambda:1001,raising=False)
+    monkeypatch.setattr(module.os,'getgid',lambda:1002,raising=False)
+    assert module.runtime_user_args()==['--user','1001:1002']
+    monkeypatch.setattr(module.os,'getuid',lambda:0)
+    with pytest.raises(ValueError,match='non-root host user'):
+        module.runtime_user_args()
+
 ROOT=Path(__file__).resolve().parents[1]
 
 

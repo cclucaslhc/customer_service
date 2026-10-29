@@ -64,6 +64,21 @@ def test_acceptance_requires_explicit_application_image():
     assert "APP='sha256:" not in source
 
 
+def test_prometheus_only_mounts_synthetic_files_not_private_mkdtemp_directory(tmp_path):
+    spec=importlib.util.spec_from_file_location('verify_grafana_mounts',ROOT/'scripts/verify_grafana.py')
+    module=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    tmp_path.chmod(0o700)
+    arguments=module.prometheus_mounts(tmp_path)
+    assert arguments==[
+        '--mount',f'type=bind,source={tmp_path/"prometheus.yml"},target=/etc/prometheus/prometheus.yml,readonly',
+        '--mount',f'type=bind,source={tmp_path/"metrics-token"},target=/etc/prometheus/metrics-token,readonly',
+    ]
+    source=(ROOT/'scripts/verify_grafana.py').read_text(encoding='utf-8')
+    assert 'credentials_file: /etc/prometheus/metrics-token' in source
+    assert 'target=/evidence' not in source
+
+
 def test_grafana_artifact_pins_plugin_and_disables_runtime_downloads():
     source=(ROOT/'ops/grafana/Dockerfile').read_text(encoding='utf-8')
     assert 'GF_PLUGINS_PREINSTALL_DISABLED=true' in source

@@ -4,7 +4,7 @@
 
 更新：2026-10-28。当前用户目标已收窄为 S2 收尾并提交，不再扩展 S3–S6；下文其他阶段保留为已有状态。历史批次与逐项证据保留在[验收记录](production-verification.md)，不以某组测试数代替阶段完成。架构仍为自管Linux双实例＋反向代理，默认DeepSeek、单Agent及独立ModelGateway。
 
-本轮最新收尾：后端584 passed/384 skipped，真实认证接收/取消保护7 passed；当前应用最终OCI重建逐blob一致、扫描0 HIGH/CRITICAL和SBOM/测试签名通过，Alertmanager安全重建也扫描0 HIGH/CRITICAL并通过Linux实际认证触发/恢复。用户已明确跳过真实外部告警送达，不再等待Gmail凭据；三通知接口保留。现有DeepSeek真实生成与用量已验证，但供应商账单/PG受保护真实调用、正式发布信任身份与远端CI仍未补齐。下段556为前批历史值，最终证据见[S2制品验收](s2-image-acceptance.md)。
+本轮最新收尾：后端588 passed/384 skipped（31.31秒）；真实认证接收/取消保护、应用OCI独立重建及扫描、Alertmanager安全重建与Linux认证触发/恢复均已有证据。新库发现的Grafana高危已通过源码重建修复，本机完整扫描及六查询通过；新轮CI 40788755603运行中。三通知接口保留；外部送达和供应商账单按用户要求跳过，仍未验证。现有DeepSeek真实生成与用量已验证，不冒充VM/PG域中的真实受保护调用。GitHub OIDC证明已接线，实际签发/验证和main提交仍待完成。下段556为历史值，当前状态以[最终验收账本](s2-final-acceptance.md)为准。
 
 S2 最新：跨模块真实隔离集成 **175 passed / 0 skipped（284.91 秒）**；普通后端全量 **556 passed / 383 skipped（27.23 秒）**，固定本地权重计量另项通过。新增Grafana、journald权限/脱敏、Collector与API→Worker关联、本地推理计量/告警、应用r2重建/扫描/测试身份签名。Grafana固定插件制品、Prometheus3.15.1、Collector0.164.0均0 HIGH/CRITICAL；查询/浏览器/Collector故障恢复通过，node2已可回退升级并复验257 Span链路。正式值班渠道、供应商账单、正式发布身份及远端 CI 未验收；不宣布整个 S2 完成。逐项见 [S2 收尾清单](s2-completion-checklist.md)。
 

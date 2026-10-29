@@ -51,3 +51,17 @@ r2使用当日下载漏洞库的HIGH/CRITICAL扫描exit0、结果0；重新生�
 CI现准备在扫描通过后生成同绑定清单并上传明确列出的OCI/SBOM/扫描/清单，保留7天；失败制品不通过always分支发布，不上传私钥或整个临时目录。workflow未推送/未在远端执行、没有自动获得生产签名权。正式发布身份/KMS、公钥信任分发和实际托管CI验收仍需用户资源或明确交付边界。
 
 本轮完整本地回归549 passed / 383 skipped，29.57秒，未配置的集成环境跳过仍不算通过。第二笔S2完成提交尚未进行。
+
+## 2026-10-29 当前制品与发布信任
+
+以上r2及“workflow未推送”为历史。托管CI已经真实运行，发现OTel/Vite新漏洞和Linux构建环境问题后均有修复；当前结果以[最终验收账本](s2-final-acceptance.md)为准。当前应用OCI manifest `sha256:5d9fae63aec890b1dc5ce4d46d08cac8db58601815d17580ee660f99e1f7d8ae`，config `sha256:17238a5c0c91c77066a53e610b5fbe49b8667debdda4ba3a9127077a2091a4ee`；本机独立重建逐blob一致，SBOM14 Debian/145 Python，完整扫描0 HIGH/CRITICAL。最终远端制品必须使用自己的实际摘要，不预先声称与本机摘要相等。
+
+推送CI使用GitHub短期OIDC身份为绑定清单签发SLSA v1证明；不生成长期组织私钥。清单显式标注`github-oidc-slsa-v1`，与默认离线`explicit-pinned-ed25519-v1`互不替代。消费者先验证身份和清单，再验证字节绑定：
+
+```powershell
+# 固定到实际成功运行的提交；验收分支不能冒充main发布。
+gh attestation verify <绝对路径/customer-service-release.json> --repo cclucaslhc/customer_service --signer-workflow cclucaslhc/customer_service/.github/workflows/verify.yml --source-ref refs/heads/main --source-digest <实际main提交SHA> --deny-self-hosted-runners
+.\.venv\Scripts\python.exe ops/release/evidence.py check-binding --signature-policy github-oidc-slsa-v1 --manifest <绝对路径/customer-service-release.json> --oci <绝对路径/customer-service-image.oci.tar> --sbom <绝对路径/customer-service-sbom.cdx.json> --scan <绝对路径/customer-service-vulnerabilities.json>
+```
+
+`check-binding`只验证原始文件摘要/OCI内容/SBOM与扫描覆盖，不验证签名。`gh --bundle`可以离线验证已下载证明，但不能单独检查仓库重命名，应同时用受认证仓库API核对repository ID `1347515734`及精确运行SHA。成功验签不代表受控生产部署批准，也不是独立审计员已审阅源码。当前新轮CI及实际OIDC下载验证仍待完成。

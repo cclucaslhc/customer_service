@@ -1,6 +1,7 @@
 """Actual Collector pipeline and outage/recovery proof on isolated loopback."""
 import json
 import argparse
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -9,6 +10,18 @@ import uuid
 
 ROOT=Path(__file__).resolve().parents[1]
 COLLECTOR='otel/opentelemetry-collector-contrib@sha256:340c9ca6a36617084c6661bdc4f0fe92b7cda5a805d61673ec8db375fddc522b'
+
+
+def runtime_user_args():
+    # The private 0700 evidence directory belongs to the non-root test runner.
+    # On POSIX use that same UID/GID rather than widening it or running as root.
+    # Docker Desktop's Windows bind mounts do not use POSIX owner matching.
+    if not hasattr(os,'getuid'):
+        return []
+    uid,gid=os.getuid(),os.getgid()
+    if uid==0:
+        raise ValueError('Run Collector acceptance as a non-root host user')
+    return ['--user',f'{uid}:{gid}']
 
 
 def docker(*args):
@@ -25,7 +38,7 @@ def main(app_image):
         config=['--mount',f'type=bind,source={ROOT / "ops/otel/collector.yaml"},target=/etc/otelcol/config.yaml,readonly']
         docker('run','--rm','--network','none',*config,COLLECTOR,'validate','--config=/etc/otelcol/config.yaml')
         docker('run','-d','--name',name,'--network','none','--memory=256m','--pids-limit=64',
-            '--cap-drop=ALL','--security-opt=no-new-privileges',*config,
+            '--cap-drop=ALL','--security-opt=no-new-privileges',*runtime_user_args(),*config,
             '--mount',f'type=bind,source={evidence},target=/var/lib/customer-service-otel',
             COLLECTOR,'--config=/etc/otelcol/config.yaml')
         started=True
