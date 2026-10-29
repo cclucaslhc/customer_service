@@ -86,9 +86,30 @@ def test_collector_security_rebuild_preserves_full_upstream_distribution():
     assert 'go.opentelemetry.io/collector/cmd/builder@v0.164.0' in source
     assert '--config manifest.yaml --skip-compilation' in source
     assert 'go get github.com/go-jose/go-jose/v4@v4.1.6 && go mod verify' in source
-    assert 'GOSUMDB=sum.golang.org' in source
+    assert 'GOSUMDB="sum.golang.org https://sum.golang.org"' in source
     assert 'COPY --from=build /out/otelcol-contrib /otelcol-contrib' in source
     assert source.rstrip().endswith('USER 10001:10001')
+
+
+def test_collector_inventory_rejects_removing_auth_or_changing_modules():
+    from copy import deepcopy
+    spec=importlib.util.spec_from_file_location('collector_components',ROOT/'scripts/verify_collector.py')
+    module=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    inventory={key:[{'name':'synthetic','module':'synthetic v1'}] for key in (
+        'receivers','processors','exporters','extensions','connectors')}
+    inventory['providers']=[{'scheme':'synthetic','module':'synthetic v1'}]
+    inventory['extensions']=[{'name':'oidc','module':'synthetic-auth v1'}]
+    candidate=deepcopy(inventory)
+    candidate['buildinfo']={'version':'synthetic-security-rebuild'}
+    assert module.compare_components(inventory,candidate)['extensions']==1
+    candidate['extensions']=[]
+    with pytest.raises(ValueError,match='differs from full upstream'):
+        module.compare_components(inventory,candidate)
+    candidate=deepcopy(inventory)
+    candidate['receivers'][0]['module']='synthetic v2'
+    with pytest.raises(ValueError,match='differs from full upstream'):
+        module.compare_components(inventory,candidate)
 
 
 def test_collector_upgrade_rejects_foreign_guest_before_reading_binary(monkeypatch):

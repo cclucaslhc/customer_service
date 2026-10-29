@@ -2,6 +2,8 @@
 
 2026-10-29最新安全状态：运行40791886920在官方0.164.0镜像发现`CVE-2026-116587`（go-jose/v4 4.1.5，修复4.1.6），本机独立新库扫描同样单项HIGH。因此下文官方镜像0 HIGH仅为旧库时间点，当前不再批准。`ops/otel/Dockerfile`以官方完整Contrib manifest重建，保留所有组件，固定源commit、OBI源码哈希、Go编译器和模块校验；构建尚未完成，不声称已修复。验证脚本现在必须同时显式提供`--app-image`与`--collector-image`，不自动回退旧镜像。
 
+本机首轮因国内镜像校验数据库EOF失败，现明确指定官方校验数据库URL，未关闭GOSUMDB或取消哈希；使用独立命名BuildKit缓存，重试不丢弃已验证依赖。实际验收会在无网络/只读/无capabilities下分别运行官方参考与重建版`components`静态清单，比较全部分类、组件名/供应器scheme、模块版本和稳定性；只忽略dist buildinfo版本。官方清单共255项，移除oidc认证或改变模块的负向测试拒绝；新二进制尚待构建后实际比对。这不启动旧参考的采集服务或批准其高危版本。
+
 2026-10-29 CI权限补验：Docker默认Collector UID10001与Linux宿主私有0700输出目录所有者不匹配。脚本现于POSIX显式使用同一非root宿主UID/GID，拒绝root调用；Windows继续默认镜像身份。没有改宽目录权限或使用root Collector。真实Linux volume重现旧UID permission denied，新UID1001在0700目录持久化三层真实Span（exported3/failed0）；首次过早检查空输出文件失败保留，实际producer触发后才算通过。完整Collector过滤/暂停恢复再次通过，仓库外证据`cs-s2-collector-b8277f73969e-faubpwvj`；新CI仍待验证。
 
 ## 当前版本增量（优先于下述0.140.0历史记录）

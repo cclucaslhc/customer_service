@@ -36,6 +36,8 @@
 - 新验收源码`b083e2fcc3753d1632da329b6c5f5ebd9eac552d`，运行[40791886920](https://github.com/cclucaslhc/customer_service/actions/runs/40791886920)已创建，尚未完成。不将此前四作业成功与本轮结果合并成全绿。
 - 该轮后端/前端/NGINX/PG-Redis通过（PG232 passed/1 deselected/0 skipped，542.26秒），Grafana真实六查询与401已通过，随后Collector新库扫描发现`CVE-2026-116587`（go-jose4.1.5→4.1.6）而失败，未签发证明。最新本机独立新库复现单项HIGH；官方最新0.164.0尚未修复。现按官方固定源码commit及完整组件manifest、固定OBI生成源码、启用Go checksum数据库重建，不删认证或其他组件；仍在构建，不能声称修复完成。
 - 已补另一次真实DeepSeek→生产ObservedModel/PG账本及预算链路：1 passed/0 skipped（5.69秒），input21/output3，预调用started与预留已提交、Token逐项匹配，第二次在发送前拒绝。密钥未复制，合成价格不当合同，首次未知不被覆盖；详见[真实调用记录](s2-deepseek-live-acceptance.md)。
+- 完整Collector补丁候选`568bbb15b04b146001781148194ba6eff8198c53`已推送，[40874823586](https://github.com/cclucaslhc/customer_service/actions/runs/40874823586)与本机构建并行验收，尚未完成。CI只在完整重建、严格扫描及真实Collector/接收器功能门禁后签发证明，不以静态契约18 passed代替实际二进制结果。
+- 本机首轮完整Collector构建在依赖校验阶段因goproxy.cn的sumdb接口EOF退出，未产生通过制品；已改为明确直连官方`sum.golang.org`（HTTP200已核对），保持签名校验并加入限定本构建的依赖/编译缓存。新构建仍在运行。另加入实际组件清单比对，包含108 receivers、36 processors、48 exporters、41 extensions、13 connectors、9 providers；只有与官方全部255项及组件模块一致才通过，不删认证扩展来躲避扫描。Grafana/Alertmanager用最新库复扫仍0 HIGH/CRITICAL。
 - 本轮续查node2：API/edge/Worker/Collector四服务active；Collector目录0700、专用cs-s2-otel属主，非提权读取traces.json被拒绝。Git新增/修改候选没有data、环境文件、私钥、数据库或归档；两份历史tracked日志仅取消跟踪，本机文件仍保留。
 
 ## 发布信任

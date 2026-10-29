@@ -7,8 +7,32 @@ import subprocess
 import tempfile
 import time
 import uuid
+import yaml
 
 ROOT=Path(__file__).resolve().parents[1]
+REFERENCE='otel/opentelemetry-collector-contrib@sha256:340c9ca6a36617084c6661bdc4f0fe92b7cda5a805d61673ec8db375fddc522b'
+
+
+def compare_components(reference,candidate):
+    def canonical(document):
+        if not isinstance(document,dict):
+            raise ValueError('Collector component inventory required')
+        groups={key:value for key,value in document.items() if key!='buildinfo'}
+        if not {'receivers','processors','exporters','extensions','connectors','providers'}<=groups.keys():
+            raise ValueError('Complete Collector component categories required')
+        result={}
+        for key,items in groups.items():
+            identity='scheme' if key=='providers' else 'name'
+            if not isinstance(items,list) or any(not isinstance(item,dict) or not isinstance(item.get(identity),str) for item in items):
+                raise ValueError('Structured Collector component inventory required')
+            if len({item[identity] for item in items})!=len(items):
+                raise ValueError('Duplicate Collector components')
+            result[key]=sorted(items,key=lambda item:item[identity])
+        return result
+    expected,actual=canonical(reference),canonical(candidate)
+    if actual!=expected:
+        raise ValueError('Collector component distribution differs from full upstream')
+    return {key:len(items) for key,items in actual.items()}
 
 
 def runtime_user_args():
@@ -34,6 +58,11 @@ def main(app_image,collector_image):
     evidence=Path(tempfile.mkdtemp(prefix=name+'-'))
     started=False
     try:
+        # Introspect the old reference only offline, never start its service.
+        inventories=[yaml.safe_load(docker('run','--rm','--network','none','--read-only',
+            '--cap-drop=ALL','--security-opt=no-new-privileges',image,'components'))
+            for image in (REFERENCE,collector_image)]
+        component_counts=compare_components(*inventories)
         config=['--mount',f'type=bind,source={ROOT / "ops/otel/collector.yaml"},target=/etc/otelcol/config.yaml,readonly']
         docker('run','--rm','--network','none',*config,collector_image,'validate','--config=/etc/otelcol/config.yaml')
         docker('run','-d','--name',name,'--network','none','--memory=256m','--pids-limit=64',
@@ -93,6 +122,8 @@ def main(app_image,collector_image):
         recovered=probe()
         verify(recovered)
         result={'collector_config_validated':True,'persisted_trace_before':first['trace_id'],
+            'collector_image_id':docker('inspect','--format={{.Image}}',name),
+            'full_upstream_components_equal':True,'component_counts':component_counts,
             'persisted_trace_after':recovered['trace_id'],'span_parent_and_ids_verified':True,
             'unknown_attributes_status_events_and_span_name_removed':True,
             'paused_collector_export_failed':outage['failed'],'runtime_directory':str(evidence),
