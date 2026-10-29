@@ -267,21 +267,26 @@ jobs:
         run: |
           .venv/bin/python scripts/verify_grafana.py \
             --app-image customer-service:verify --grafana-image customer-service-grafana:verify
-      - name: Scan pinned Prometheus and Collector images
+      - name: Scan pinned Prometheus image
         run: |
-          index=0
-          for monitoring_image in \
-            prom/prometheus@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2 \
-            otel/opentelemetry-collector-contrib@sha256:340c9ca6a36617084c6661bdc4f0fe92b7cda5a805d61673ec8db375fddc522b; do
-            index=$((index + 1))
-            docker run --rm -v "$RUNNER_TEMP:/scan" \
-              docker.io/aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e \
-              image --image-src remote --scanners vuln --severity HIGH,CRITICAL \
-              --exit-code 1 --format json --output "/scan/monitoring-$index-vulnerabilities.json" \
-              --timeout 10m "$monitoring_image"
-          done
+          trap 'python3 ops/release/scan_summary.py "$RUNNER_TEMP/prometheus-vulnerabilities.json"' EXIT
+          docker run --rm -v "$RUNNER_TEMP:/scan" \
+            docker.io/aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e \
+            image --image-src remote --scanners vuln --severity HIGH,CRITICAL \
+            --exit-code 1 --format json --output /scan/prometheus-vulnerabilities.json \
+            --timeout 10m prom/prometheus@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2
+      - name: Build and scan security-rebuilt Collector
+        run: |
+          docker build --platform linux/amd64 --provenance=false \
+            -f ops/otel/Dockerfile -t customer-service-collector:verify .
+          docker save --output "$RUNNER_TEMP/collector-image.tar" customer-service-collector:verify
+          trap 'python3 ops/release/scan_summary.py "$RUNNER_TEMP/collector-vulnerabilities.json"' EXIT
+          docker run --rm -v "$RUNNER_TEMP:/scan" \
+            docker.io/aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e \
+            image --input /scan/collector-image.tar --scanners vuln --severity HIGH,CRITICAL \
+            --exit-code 1 --format json --output /scan/collector-vulnerabilities.json --timeout 10m
       - name: Verify real Collector privacy and outage recovery
-        run: .venv/bin/python scripts/verify_collector.py --app-image customer-service:verify
+        run: .venv/bin/python scripts/verify_collector.py --app-image customer-service:verify --collector-image customer-service-collector:verify
       - name: Build and scan security-rebuilt Alertmanager
         run: |
           docker build --platform linux/amd64 --provenance=false \

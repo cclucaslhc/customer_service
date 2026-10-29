@@ -77,6 +77,18 @@ def test_collector_acceptance_requires_explicit_application_image():
     assert result.returncode==2 and '--app-image' in result.stderr
     source=(ROOT/'scripts/verify_collector.py').read_text(encoding='utf-8')
     assert "APP='sha256:" not in source
+    assert '--collector-image' in result.stderr
+
+
+def test_collector_security_rebuild_preserves_full_upstream_distribution():
+    source=(ROOT/'ops/otel/Dockerfile').read_text(encoding='utf-8')
+    assert 'bf626fce5c8053ac6ae9c6c5f4c408c8c182740e' in source
+    assert 'go.opentelemetry.io/collector/cmd/builder@v0.164.0' in source
+    assert '--config manifest.yaml --skip-compilation' in source
+    assert 'go get github.com/go-jose/go-jose/v4@v4.1.6 && go mod verify' in source
+    assert 'GOSUMDB=sum.golang.org' in source
+    assert 'COPY --from=build /out/otelcol-contrib /otelcol-contrib' in source
+    assert source.rstrip().endswith('USER 10001:10001')
 
 
 def test_collector_upgrade_rejects_foreign_guest_before_reading_binary(monkeypatch):

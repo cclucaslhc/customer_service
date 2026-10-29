@@ -9,7 +9,6 @@ import time
 import uuid
 
 ROOT=Path(__file__).resolve().parents[1]
-COLLECTOR='otel/opentelemetry-collector-contrib@sha256:340c9ca6a36617084c6661bdc4f0fe92b7cda5a805d61673ec8db375fddc522b'
 
 
 def runtime_user_args():
@@ -30,17 +29,17 @@ def docker(*args):
     return result.stdout.strip()
 
 
-def main(app_image):
+def main(app_image,collector_image):
     name='cs-s2-collector-'+uuid.uuid4().hex[:12]
     evidence=Path(tempfile.mkdtemp(prefix=name+'-'))
     started=False
     try:
         config=['--mount',f'type=bind,source={ROOT / "ops/otel/collector.yaml"},target=/etc/otelcol/config.yaml,readonly']
-        docker('run','--rm','--network','none',*config,COLLECTOR,'validate','--config=/etc/otelcol/config.yaml')
+        docker('run','--rm','--network','none',*config,collector_image,'validate','--config=/etc/otelcol/config.yaml')
         docker('run','-d','--name',name,'--network','none','--memory=256m','--pids-limit=64',
             '--cap-drop=ALL','--security-opt=no-new-privileges',*runtime_user_args(),*config,
             '--mount',f'type=bind,source={evidence},target=/var/lib/customer-service-otel',
-            COLLECTOR,'--config=/etc/otelcol/config.yaml')
+            collector_image,'--config=/etc/otelcol/config.yaml')
         started=True
         def probe(outage=False,privacy=False):
             raw=docker('run','--rm','--network','container:'+name,'--memory=256m','--pids-limit=64',
@@ -108,4 +107,6 @@ def main(app_image):
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app-image',required=True,help='Explicit current application image')
-    main(parser.parse_args().app_image)
+    parser.add_argument('--collector-image',required=True,help='Explicit scanned security-rebuilt Collector image')
+    args=parser.parse_args()
+    main(args.app_image,args.collector_image)

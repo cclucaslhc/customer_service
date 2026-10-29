@@ -17,7 +17,7 @@ def test_external_github_actions_are_pinned_to_full_commits():
 
 
 def test_dockerfile_external_build_sources_are_digest_pinned():
-    for path in (ROOT / 'Dockerfile', ROOT / 'Dockerfile.distroless-candidate',ROOT/'ops/grafana/Dockerfile',ROOT/'ops/alertmanager/Dockerfile'):
+    for path in (ROOT / 'Dockerfile', ROOT / 'Dockerfile.distroless-candidate',ROOT/'ops/grafana/Dockerfile',ROOT/'ops/alertmanager/Dockerfile',ROOT/'ops/otel/Dockerfile'):
         dockerfile = path.read_text(encoding='utf-8')
         sources = [line.split(' ', 1)[1].split(' AS ', 1)[0]
                    for line in dockerfile.splitlines() if line.startswith('FROM ')]
@@ -54,12 +54,14 @@ def test_monitoring_scan_precedes_real_dashboard_queries():
 def test_monitoring_scan_targets_match_actual_acceptance_images():
     import importlib.util
     workflow=(ROOT/'.github/workflows/verify.yml').read_text(encoding='utf-8')
-    for filename,constant in (('verify_grafana','PROMETHEUS'),('verify_collector','COLLECTOR')):
+    for filename,constant in (('verify_grafana','PROMETHEUS'),):
         spec=importlib.util.spec_from_file_location(filename,ROOT/f'scripts/{filename}.py')
         module=importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         assert getattr(module,constant) in workflow
-    assert workflow.index('name: Scan pinned Prometheus and Collector images')<workflow.index('name: Verify real Collector privacy and outage recovery')
+    assert workflow.index('name: Build and scan security-rebuilt Collector')<workflow.index('name: Verify real Collector privacy and outage recovery')
+    assert '--collector-image customer-service-collector:verify' in workflow
+    assert '--input /scan/collector-image.tar' in workflow
 
 
 def test_oidc_attestation_is_scoped_after_all_gates_and_before_final_publication():

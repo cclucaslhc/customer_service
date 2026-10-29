@@ -1,5 +1,7 @@
 # S2 私有 Collector 实机证据
 
+2026-10-29最新安全状态：运行40791886920在官方0.164.0镜像发现`CVE-2026-116587`（go-jose/v4 4.1.5，修复4.1.6），本机独立新库扫描同样单项HIGH。因此下文官方镜像0 HIGH仅为旧库时间点，当前不再批准。`ops/otel/Dockerfile`以官方完整Contrib manifest重建，保留所有组件，固定源commit、OBI源码哈希、Go编译器和模块校验；构建尚未完成，不声称已修复。验证脚本现在必须同时显式提供`--app-image`与`--collector-image`，不自动回退旧镜像。
+
 2026-10-29 CI权限补验：Docker默认Collector UID10001与Linux宿主私有0700输出目录所有者不匹配。脚本现于POSIX显式使用同一非root宿主UID/GID，拒绝root调用；Windows继续默认镜像身份。没有改宽目录权限或使用root Collector。真实Linux volume重现旧UID permission denied，新UID1001在0700目录持久化三层真实Span（exported3/failed0）；首次过早检查空输出文件失败保留，实际producer触发后才算通过。完整Collector过滤/暂停恢复再次通过，仓库外证据`cs-s2-collector-b8277f73969e-faubpwvj`；新CI仍待验证。
 
 ## 当前版本增量（优先于下述0.140.0历史记录）

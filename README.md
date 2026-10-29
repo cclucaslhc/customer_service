@@ -1,6 +1,6 @@
 # 云小智 AI 客服 MVP
 
-2026-10-29：S2最终验收进行中。OTel已升级1.45.1、Vite8.3.5；前端40项测试/构建及漏洞审计通过，本机S2真实组件集成192 passed/0 skipped；最新应用OCI独立重建一致、扫描0 HIGH/CRITICAL。GitHub验收分支已推送，后端/前端/NGINX通过，PG/Redis及最终制品/OIDC门禁仍在核对。**真实外部告警送达与真实账单对账已由用户明确跳过，保留未验证记录，不再等待Gmail凭据。**最终Git收尾与全绿前不宣布S2完成，也不代表整体可上线。详见[最终验收账本](docs/s2-final-acceptance.md)。下文带日期的旧段落是历史批次，不替代该账本。
+2026-10-29：S2最终验收进行中。OTel已升级1.45.1、Vite8.3.5；前端40项测试/构建及漏洞审计通过，本机后端590 passed/384 skipped，S2真实组件集成192 passed/0 skipped，组间不累加。GitHub前轮四测试作业通过、Grafana安全构建与扫描通过，但Linux私有目录权限导致数据源检查失败；已通过非root真实容器复现/修复，并推送新轮40791886920等待完整门禁与OIDC验证。**真实外部告警送达与真实账单对账已由用户明确跳过，保留未验证记录，不再等待Gmail凭据。**最终Git收尾与全绿前不宣布S2完成，也不代表整体可上线。详见[最终验收账本](docs/s2-final-acceptance.md)。下文带日期的旧段落是历史批次，不替代该账本。
 
 2026-10-28 S2 收尾：隔离组件跨模块组 **175 passed / 0 skipped**，普通后端全量 **556 passed / 383 skipped**（跳过不计通过）。Grafana固定插件制品、Prometheus3.15.1和Collector0.164.0均扫描0 HIGH/CRITICAL，真实查询/Collector故障恢复通过；隔离VM的Collector已可回退升级并复验257 Span的API→Worker链路。已补日志/Collector部署、本地推理计量与告警、应用制品重建/测试身份签名。正式告警渠道、账单核验、发布信任身份及远端 CI 仍缺。**S2 尚未整体完成，当前没有第二笔完成提交，也不需要用户合并 main。**见 [S2 收尾清单](docs/s2-completion-checklist.md)。
 
