@@ -23,7 +23,7 @@
 ## 最新本机证据
 
 - OTel升级后的跨模块集成：192 passed /0 skipped，276.39秒，仓库外JUnit `s2-after-ci-fixes-20261029.xml`。
-- 最新普通后端591 passed /384 skipped（33.74秒），覆盖挂载/UID及完整Collector重建契约；供应链/发布证据/Grafana前批专项21 passed（0.72秒）。前端40 passed、build成功、npm audit 0。未配置外部环境的跳过不计通过。
+- 最新普通后端592 passed /384 skipped（31.26秒），覆盖挂载/UID、完整Collector清单及重建契约；供应链/发布证据/Grafana前批专项21 passed（0.72秒）。前端40 passed、build成功、npm audit 0。未配置外部环境的跳过不计通过。
 - 当前应用OCI manifest `sha256:5d9fae63aec890b1dc5ce4d46d08cac8db58601815d17580ee660f99e1f7d8ae`，config `sha256:17238a5c0c91c77066a53e610b5fbe49b8667debdda4ba3a9127077a2091a4ee`。默认/独立no-cache builder逐blob相同；0 HIGH/CRITICAL；SBOM14 Debian/145 Python。文件为实验室`s2-ci-fixed{-rebuild}-20261029.oci.tar`，报告在`s2-r2-output-20261028/s2-ci-fixed-*-20261029.*`。
 - GitHub CI首轮暴露并已修复OTel新CVE、Vite高危、无关MinIO拉取、代理就绪竞态，以及Linux路径/导入/临时挂载所有权。没有关闭审计、改root或降低沙箱要求来通过。各失败批次不作最终通过证据。
 - 当前验收分支源码`14f3e77359617fd5cb855149950c4f241798e3ed`，运行[40725358853](https://github.com/cclucaslhc/customer_service/actions/runs/40725358853)。前端、后端、NGINX通过，PG/Redis和制品作业仍在执行；这不是最终全绿声明。
@@ -38,6 +38,8 @@
 - 已补另一次真实DeepSeek→生产ObservedModel/PG账本及预算链路：1 passed/0 skipped（5.69秒），input21/output3，预调用started与预留已提交、Token逐项匹配，第二次在发送前拒绝。密钥未复制，合成价格不当合同，首次未知不被覆盖；详见[真实调用记录](s2-deepseek-live-acceptance.md)。
 - 完整Collector补丁候选`568bbb15b04b146001781148194ba6eff8198c53`已推送，[40874823586](https://github.com/cclucaslhc/customer_service/actions/runs/40874823586)与本机构建并行验收，尚未完成。CI只在完整重建、严格扫描及真实Collector/接收器功能门禁后签发证明，不以静态契约18 passed代替实际二进制结果。
 - 本机首轮完整Collector构建在依赖校验阶段因goproxy.cn的sumdb接口EOF退出，未产生通过制品；已改为明确直连官方`sum.golang.org`（HTTP200已核对），保持签名校验并加入限定本构建的依赖/编译缓存。新构建仍在运行。另加入实际组件清单比对，包含108 receivers、36 processors、48 exporters、41 extensions、13 connectors、9 providers；只有与官方全部255项及组件模块一致才通过，不删认证扩展来躲避扫描。Grafana/Alertmanager用最新库复扫仍0 HIGH/CRITICAL。
+- 当前完整清单/官方校验候选`08e5f1ce74ea0aaea2b346a5d4184b9d7309deac`，CI [40876670521](https://github.com/cclucaslhc/customer_service/actions/runs/40876670521)正在执行。本机重建已进入Getting go modules，未完成编译/扫描，旧候选运行不替代本轮结果。
+- 本机Go1.27.3补丁版随后编译成功、完整扫描0 HIGH/CRITICAL，但`--version`/`components`在旧SermoDigital/jose初始化时panic，功能失败，**不准作为完成制品**。失败manifest `sha256:e70fc02fd1fcd150ac17a1fe7ab6babdf93097f06a69cda286adcb885106b66b`，保留原归档及报告。核对官方原二进制实际Go1.26.10与go.dev当前受支持稳定补丁列表后，改用Go1.26.10固定摘要重建；不删组件、不关闭密码学保护，go-jose4.1.6仍保留，新编译正在运行。
 - 本轮续查node2：API/edge/Worker/Collector四服务active；Collector目录0700、专用cs-s2-otel属主，非提权读取traces.json被拒绝。Git新增/修改候选没有data、环境文件、私钥、数据库或归档；两份历史tracked日志仅取消跟踪，本机文件仍保留。
 
 ## 发布信任

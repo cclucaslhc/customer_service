@@ -82,6 +82,7 @@ def test_collector_acceptance_requires_explicit_application_image():
 
 def test_collector_security_rebuild_preserves_full_upstream_distribution():
     source=(ROOT/'ops/otel/Dockerfile').read_text(encoding='utf-8')
+    assert 'golang:1.26.10-bookworm@sha256:23ce71337b726608afb1bc00986e630a05034a87a87ea1fc2cd1ae5cf33387eb' in source
     assert 'bf626fce5c8053ac6ae9c6c5f4c408c8c182740e' in source
     assert 'go.opentelemetry.io/collector/cmd/builder@v0.164.0' in source
     assert '--config manifest.yaml --skip-compilation' in source

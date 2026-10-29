@@ -4,6 +4,8 @@
 
 本机首轮因国内镜像校验数据库EOF失败，现明确指定官方校验数据库URL，未关闭GOSUMDB或取消哈希；使用独立命名BuildKit缓存，重试不丢弃已验证依赖。实际验收会在无网络/只读/无capabilities下分别运行官方参考与重建版`components`静态清单，比较全部分类、组件名/供应器scheme、模块版本和稳定性；只忽略dist buildinfo版本。官方清单共255项，移除oidc认证或改变模块的负向测试拒绝；新二进制尚待构建后实际比对。这不启动旧参考的采集服务或批准其高危版本。
 
+Go1.27.3重建首版实际编译和扫描exit0，但运行`--version`/`components`在`SermoDigital/jose/crypto`的RegisterHash初始化panic。归档`collector-security-20261029.tar`、报告`collector-security-20261029.json`及manifest `sha256:e70fc02fd1fcd150ac17a1fe7ab6babdf93097f06a69cda286adcb885106b66b`仅是失败候选，0 HIGH不代表可用。已用go version读取官方原版确认Go1.26.10，并从go.dev当前稳定列表确认其仍为受支持1.26最新补丁；Dockerfile现固定官方镜像`sha256:23ce71337b726608afb1bc00986e630a05034a87a87ea1fc2cd1ae5cf33387eb`。不篡改crypto标准库、不删除旧组件，仍升级go-jose4.1.6。新候选标签`s2-security-go126-20261029`正在重建，尚未取得功能/扫描通过证据。
+
 2026-10-29 CI权限补验：Docker默认Collector UID10001与Linux宿主私有0700输出目录所有者不匹配。脚本现于POSIX显式使用同一非root宿主UID/GID，拒绝root调用；Windows继续默认镜像身份。没有改宽目录权限或使用root Collector。真实Linux volume重现旧UID permission denied，新UID1001在0700目录持久化三层真实Span（exported3/failed0）；首次过早检查空输出文件失败保留，实际producer触发后才算通过。完整Collector过滤/暂停恢复再次通过，仓库外证据`cs-s2-collector-b8277f73969e-faubpwvj`；新CI仍待验证。
 
 ## 当前版本增量（优先于下述0.140.0历史记录）
