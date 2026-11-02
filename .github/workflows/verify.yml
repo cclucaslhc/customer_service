@@ -225,7 +225,7 @@ jobs:
           tar -xf "$RUNNER_TEMP/customer-service-image.oci.tar" -C "$RUNNER_TEMP/customer-service-oci"
       - name: Generate CycloneDX SBOM
         run: |
-          docker run --rm -v "$RUNNER_TEMP:/scan" \
+          docker run --rm --user "$(id -u):$(id -g)" --env TRIVY_CACHE_DIR=/tmp/trivy-cache -v "$RUNNER_TEMP:/scan" \
             docker.io/aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e \
             image --input /scan/customer-service-oci --format cyclonedx \
             --output /scan/customer-service-sbom.cdx.json --timeout 10m
@@ -243,7 +243,7 @@ jobs:
       - name: Scan OS and application packages
         run: |
           trap 'python3 ops/release/scan_summary.py "$RUNNER_TEMP/customer-service-vulnerabilities.json"' EXIT
-          docker run --rm -v "$RUNNER_TEMP:/scan" \
+          docker run --rm --user "$(id -u):$(id -g)" --env TRIVY_CACHE_DIR=/tmp/trivy-cache -v "$RUNNER_TEMP:/scan" \
             docker.io/aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e \
             image --input /scan/customer-service-oci --scanners vuln \
             --severity HIGH,CRITICAL --exit-code 1 --format json \
@@ -332,6 +332,7 @@ jobs:
       # can still sign offline. Push CI uses a short-lived GitHub OIDC identity;
       # consumers must check this repository/workflow/source ref, not just a signature.
       - name: Attest bound release evidence using GitHub OIDC
+        id: release_attestation
         if: github.event_name == 'push'
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
@@ -347,4 +348,5 @@ jobs:
             ${{ runner.temp }}/customer-service-sbom.cdx.json
             ${{ runner.temp }}/customer-service-vulnerabilities.json
             ${{ runner.temp }}/customer-service-release.json
+            ${{ steps.release_attestation.outputs.bundle-path }}
           if-no-files-found: error

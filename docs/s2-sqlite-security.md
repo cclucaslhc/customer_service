@@ -20,4 +20,6 @@ Trivy仍扫描实际OCI中的Debian与Python组件，HIGH/CRITICAL门槛不变�
 
 ## 当前验收状态
 
+后续CI 41460148327在源码修复后的独立镜像重建通过后，发现Trivy容器默认root创建SBOM，宿主runner在enrich时PermissionError；该轮失败，不能声称扫描完成。已将需要后处理的SBOM与应用扫描两容器显式设为runner的非root UID/GID，并给扫描缓存独立/tmp路径；不改chmod777、不使用提权写入。新增契约测试后相关34 passed。OIDC的官方action bundle-path也已加入最终制品包，验签不依赖本机GitHub CLI登录或从Git凭据助手取Token。修复仍待新的真实CI。
+
 首次SQLite修复候选的CI 41460148327已通过实际加载/FTS5回归和解析文档检查，仍在运行。后续更严格的原生扫描数据库/控制用例门禁尚待新候选完整CI。普通Python3.12全量607 passed/384 skipped/6 warnings（29.92秒），相关专项33 passed；跳过不算通过。最终OCI扫描、OIDC验证和main交付完成前，不将本页当作S2完成声明。

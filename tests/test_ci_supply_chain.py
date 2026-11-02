@@ -79,6 +79,8 @@ def test_oidc_attestation_is_scoped_after_all_gates_and_before_final_publication
     assert gate<attest<publish
     assert "if: github.event_name == 'push'" in image[attest:publish]
     assert 'subject-path: ${{ runner.temp }}/customer-service-release.json' in image[attest:publish]
+    assert 'id: release_attestation' in image[attest:publish]
+    assert '${{ steps.release_attestation.outputs.bundle-path }}' in image[publish:]
     assert '--signature-policy github-oidc-slsa-v1' in image[:attest]
 
 
@@ -89,3 +91,12 @@ def test_oci_export_uses_two_separate_pinned_container_builders():
         assert f'buildx create --name {name} --driver docker-container' in selected
         assert f'buildx build --builder {name} ' in selected
     assert selected.count('--driver-opt image=moby/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea')==2
+
+
+def test_editable_scanner_reports_use_unprivileged_runner_identity():
+    workflow=(ROOT/'.github/workflows/verify.yml').read_text(encoding='utf-8')
+    for start,end in (('name: Generate CycloneDX SBOM','name: Verify SBOM package inventories'),
+                      ('name: Scan OS and application packages','name: Bind OCI, SBOM')):
+        section=workflow[workflow.index(start):workflow.index(end)]
+        assert '--user "$(id -u):$(id -g)"' in section
+        assert '--env TRIVY_CACHE_DIR=/tmp/trivy-cache' in section
