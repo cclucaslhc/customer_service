@@ -62,6 +62,10 @@ def test_monitoring_scan_targets_match_actual_acceptance_images():
     assert workflow.index('name: Build and scan security-rebuilt Collector')<workflow.index('name: Verify real Collector privacy and outage recovery')
     assert '--collector-image customer-service-collector:verify' in workflow
     assert '--input /scan/collector-image.tar' in workflow
+    # Full Contrib plus application/monitoring gates exceeded the old 45m cap.
+    image_job=workflow[workflow.index('  linux-image:'):]
+    assert 'timeout-minutes: 120' in image_job
+    assert "--build-arg 'GO_MODULE_PROXY=https://proxy.golang.org|https://goproxy.cn|direct'" in image_job
 
 
 def test_oidc_attestation_is_scoped_after_all_gates_and_before_final_publication():

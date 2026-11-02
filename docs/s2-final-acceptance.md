@@ -2,6 +2,8 @@
 
 更新：2026-10-29。当前状态：**验收进行中，未宣布完成**。本页仅对应用户收窄后的S2；不把S3–S7或整体生产上线混为本轮完成标准。
 
+2026-11-02恢复核查：Go1.26.10补丁镜像此前已通过全部255项组件比对、真实Collector过滤/暂停恢复及完整0 HIGH/CRITICAL扫描；隔离node2可回退升级也已成功。运行40879749202的四测试作业通过，但制品作业在完整Collector依赖下载中被45分钟作业上限取消，签名/最终制品未生成，不算全绿。已为完整应用＋监控流水线配置120分钟有界预算，GitHub runner优先官方Go代理、保留国内回退和签名校验；没有降低安全/功能门槛。测试VM在间隔期间关闭，已恢复原两台VM，当前正在复核网络/服务与新一轮CI。
+
 ## 用户明确调整
 
 - 保留企业微信、钉钉、邮箱三个通知接口；跳过真实外部告警送达。不再要求Gmail密码/OAuth，8011安全配置页已停止。此项为豁免，不是送达通过。
@@ -40,6 +42,7 @@
 - 本机首轮完整Collector构建在依赖校验阶段因goproxy.cn的sumdb接口EOF退出，未产生通过制品；已改为明确直连官方`sum.golang.org`（HTTP200已核对），保持签名校验并加入限定本构建的依赖/编译缓存。新构建仍在运行。另加入实际组件清单比对，包含108 receivers、36 processors、48 exporters、41 extensions、13 connectors、9 providers；只有与官方全部255项及组件模块一致才通过，不删认证扩展来躲避扫描。Grafana/Alertmanager用最新库复扫仍0 HIGH/CRITICAL。
 - 当前完整清单/官方校验候选`08e5f1ce74ea0aaea2b346a5d4184b9d7309deac`，CI [40876670521](https://github.com/cclucaslhc/customer_service/actions/runs/40876670521)正在执行。本机重建已进入Getting go modules，未完成编译/扫描，旧候选运行不替代本轮结果。
 - 本机Go1.27.3补丁版随后编译成功、完整扫描0 HIGH/CRITICAL，但`--version`/`components`在旧SermoDigital/jose初始化时panic，功能失败，**不准作为完成制品**。失败manifest `sha256:e70fc02fd1fcd150ac17a1fe7ab6babdf93097f06a69cda286adcb885106b66b`，保留原归档及报告。核对官方原二进制实际Go1.26.10与go.dev当前受支持稳定补丁列表后，改用Go1.26.10固定摘要重建；不删组件、不关闭密码学保护，go-jose4.1.6仍保留，新编译正在运行。
+- Go1.26.10兼容候选`45cb0d4af6fc6dcd59233c2db95e6280a25c98a3`，CI [40879749202](https://github.com/cclucaslhc/customer_service/actions/runs/40879749202)已启动；本机已复用校验缓存、再次通过全部模块校验并进入编译，尚未取得运行通过。旧Go1.27候选不作为本次发布依据。
 - 本轮续查node2：API/edge/Worker/Collector四服务active；Collector目录0700、专用cs-s2-otel属主，非提权读取traces.json被拒绝。Git新增/修改候选没有data、环境文件、私钥、数据库或归档；两份历史tracked日志仅取消跟踪，本机文件仍保留。
 
 ## 发布信任

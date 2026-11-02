@@ -123,7 +123,7 @@ jobs:
 
   linux-image:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 120
     permissions:
       contents: read
       id-token: write
@@ -278,6 +278,7 @@ jobs:
       - name: Build and scan security-rebuilt Collector
         run: |
           docker build --platform linux/amd64 --provenance=false \
+            --build-arg 'GO_MODULE_PROXY=https://proxy.golang.org|https://goproxy.cn|direct' \
             -f ops/otel/Dockerfile -t customer-service-collector:verify .
           docker save --output "$RUNNER_TEMP/collector-image.tar" customer-service-collector:verify
           trap 'python3 ops/release/scan_summary.py "$RUNNER_TEMP/collector-vulnerabilities.json"' EXIT

@@ -2,7 +2,8 @@
 # Match upstream's currently supported Go 1.26 patch line. Go 1.27 rejects
 # an initialization hook in the unchanged legacy SermoDigital component.
 FROM docker.io/library/golang:1.26.10-bookworm@sha256:23ce71337b726608afb1bc00986e630a05034a87a87ea1fc2cd1ae5cf33387eb AS build
-ENV GOTOOLCHAIN=local GOWORK=off GOPROXY=https://goproxy.cn|https://proxy.golang.org|direct GOSUMDB="sum.golang.org https://sum.golang.org" CGO_ENABLED=0 GOMAXPROCS=2 GOFLAGS=-p=2
+ARG GO_MODULE_PROXY=https://goproxy.cn|https://proxy.golang.org|direct
+ENV GOTOOLCHAIN=local GOWORK=off GOPROXY=${GO_MODULE_PROXY} GOSUMDB="sum.golang.org https://sum.golang.org" CGO_ENABLED=0 GOMAXPROCS=2 GOFLAGS=-p=2
 ADD --checksum=sha256:77907d33ff432f90b0211cacfad41426eac8f3fb1c1078115cc2c34b285121ab https://codeload.github.com/open-telemetry/opentelemetry-collector-releases/tar.gz/bf626fce5c8053ac6ae9c6c5f4c408c8c182740e /source.tar.gz
 # Official generated BPF sources required by the unchanged upstream manifest.
 ADD --checksum=sha256:d3cbec602e3ab7b357d2f4a57b29e502365f9098808418e8b4d96dec8fa9281f https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation/releases/download/v0.15.2/obi-v0.15.2-source-generated.tar.gz /obi.tar.gz
