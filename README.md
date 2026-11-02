@@ -1,5 +1,7 @@
 # 云小智 AI 客服 MVP
 
+2026-11-02最新：支持Python3.11+，生产Python3.12；独立3.12.15全量592 passed/384 skipped，锁依赖审计0已知漏洞。Collector完整255组件安全重建及隔离VM的257 Span复验已通过。旧CI因新依赖漏洞失败，已修复并等待新CI、真实OIDC验签及Git收尾；S2尚未宣布完成。真实通知送达和账单对账按用户决定跳过，均保留未验证。下文为历史记录，当前以[最终验收账本](docs/s2-final-acceptance.md)为准。
+
 2026-10-29：S2最终验收进行中。OTel已升级1.45.1、Vite8.3.5；前端40项测试/构建及漏洞审计通过，本机后端592 passed/384 skipped，S2真实组件集成192 passed/0 skipped，组间不累加。真实DeepSeek与PG用量/预算联动已补验，测试价格不当合同。Grafana权限问题已修复且真实查询通过；Collector官方0.164.0被最新漏洞库发现HIGH，正在保留全部255项组件安全重建，旧扫描结论不作当前批准。最新CI 40876670521仍在执行。**真实外部告警送达与真实账单对账已由用户明确跳过，保留未验证记录，不再等待Gmail凭据。**最终Git收尾与全绿前不宣布S2完成，也不代表整体可上线。详见[最终验收账本](docs/s2-final-acceptance.md)。下文带日期的旧段落是历史批次，不替代该账本。
 
 2026-10-28 S2 收尾：隔离组件跨模块组 **175 passed / 0 skipped**，普通后端全量 **556 passed / 383 skipped**（跳过不计通过）。Grafana固定插件制品、Prometheus3.15.1和Collector0.164.0均扫描0 HIGH/CRITICAL，真实查询/Collector故障恢复通过；隔离VM的Collector已可回退升级并复验257 Span的API→Worker链路。已补日志/Collector部署、本地推理计量与告警、应用制品重建/测试身份签名。正式告警渠道、账单核验、发布信任身份及远端 CI 仍缺。**S2 尚未整体完成，当前没有第二笔完成提交，也不需要用户合并 main。**见 [S2 收尾清单](docs/s2-completion-checklist.md)。
@@ -64,10 +66,12 @@
 
 ## 本地运行
 
-要求 Python 3.10+ 和 Node.js 20+。
+要求 Python 3.11+ 和 Node.js 20+；生产镜像与正式 CI 使用 Python 3.12、Node.js 22。Python 3.10 不能安装当前 Pillow/dnspython 安全修复版，不再支持。
+
+以下命令面向全新环境。已有 Python 3.10 `.venv` 时请保留原目录，另建新环境（例如 `.venv312`，同步替换下方路径），不要原地混装不同 Python 版本；数据、上传文件与管理界面密钥不需要复制或重建。
 
 ```powershell
-python -m venv .venv
+py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -e ".[test]"
 Set-Location frontend
 npm.cmd install --registry=https://registry.npmmirror.com

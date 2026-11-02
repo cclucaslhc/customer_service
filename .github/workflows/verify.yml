@@ -236,6 +236,7 @@ jobs:
           if-no-files-found: error
       - name: Scan OS and application packages
         run: |
+          trap 'python3 ops/release/scan_summary.py "$RUNNER_TEMP/customer-service-vulnerabilities.json"' EXIT
           docker run --rm -v "$RUNNER_TEMP:/scan" \
             docker.io/aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e \
             image --input /scan/customer-service-oci --scanners vuln \
