@@ -31,12 +31,12 @@
 | --- | --- | --- |
 | 结构化日志、脱敏、留存、读取角色 | 白名单出口；node2 journald命名空间、非提权拒绝、重启与加速到期归档清理；14day/512MiB配置受限且无全局转发 | 机制/隔离实机已验证；不声称已等待14天或完成生产负载认证 |
 | HTTP/Agent/model/tool/RAG/database OTel及关联ID | 私有Collector白名单/过滤/故障恢复；实际API→独立ChatWorker257 Span同链及唯一attempt；知识/对象/SQL真实组件专项 | 已有实机和组件证据；不声称已有生产Tempo查询平台 |
-| 低基数Prometheus/Grafana/Alertmanager | 私有出口、真实查询/六面板/401/NO DATA；真实认证接收端firing/resolved与取消并发保护；Collector最新扫描发现HIGH，完整组件安全重建进行中 | 协议/机制已验证；Collector制品待复验，外部送达按用户豁免 |
+| 低基数Prometheus/Grafana/Alertmanager | 私有出口、真实查询/六面板/401/NO DATA；真实认证接收端firing/resolved与取消并发保护；Collector完整255组件补丁版功能/扫描及升级后257 Span通过 | 隔离协议/机制已验证；最终CI仍须通过，外部送达按用户豁免 |
 | 模型/Embedding/Rerank用量、版本价格、未知与对账 | PG追加账本；真实固定离线权重/tokenizer计量；另一次真实DeepSeek input21/output3与PG终态精确匹配、预调用持久预留及第二次预算拒绝通过；首次取证错误未知保留 | 核心机制/真实SDK已验证；测试价格非合同，真实账单按用户豁免，离线基础设施金额仍NULL |
 | 日/租户/Run预算、软硬门禁与原子预留 | 真实隔离PG并发/未知/恢复和角色测试；实际Prometheus→Alertmanager规则联动；离线推理不伪造在线收费 | 已有真实PG/规则证据，不将未知费用当0、不承诺未来在线Embedding可旁路预算 |
-| 锁依赖、非root/不可变、扫描、可重建CI制品 | OTel1.45.1、Vite8.3.5；独立无缓存OCI一致、SBOM及严格扫描；GitHub真实CI正在修复/运行，OIDC证明已接线 | **待当前CI全绿、OIDC验证及最终Git交付** |
+| 锁依赖、非root/不可变、扫描、可重建CI制品 | OTel1.45.1、Vite8.3.5；Python安全锁及独立3.12回归；CI实际独立OCI一致，但最新SQLite HIGH修复后须完整复验，OIDC证明已接线 | **待当前CI全绿、OIDC验证及最终Git交付** |
 
-## 最新本机证据
+## 历史批次与本机证据（当前以页首为准）
 
 - OTel升级后的跨模块集成：192 passed /0 skipped，276.39秒，仓库外JUnit `s2-after-ci-fixes-20261029.xml`。
 - 最新普通后端592 passed /384 skipped（31.26秒），覆盖挂载/UID、完整Collector清单及重建契约；供应链/发布证据/Grafana前批专项21 passed（0.72秒）。前端40 passed、build成功、npm audit 0。未配置外部环境的跳过不计通过。

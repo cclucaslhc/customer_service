@@ -67,9 +67,15 @@ def enrich(sbom, native):
     if any(x.get('purl', '').startswith('pkg:deb/debian/libsqlite3-0@') for x in components):
         raise ValueError('Old Debian SQLite still inventoried')
     existing = [x for x in components if x.get('purl') == PURL]
-    if existing and existing != [value]:
-        raise ValueError('Conflicting native SQLite inventory')
-    if not existing:
+    if existing:
+        # Trivy may import the embedded CDX while normalizing fields (notably
+        # CPE/source properties). Retain its binary identity check, then restore
+        # complete upstream provenance for the supplemental native scanner.
+        if (len(existing) != 1 or existing[0].get('version') != VERSION
+                or existing[0].get('hashes') != value['hashes']):
+            raise ValueError('Conflicting native SQLite inventory')
+        components[components.index(existing[0])] = value
+    else:
         components.append(value)
     document['components'] = components
     sbom.write_text(json.dumps(document, sort_keys=True), encoding='utf-8')
@@ -78,22 +84,34 @@ def enrich(sbom, native):
 def bind_scan(scan, native_scan, sbom):
     report = json.loads(scan.read_text())
     native = json.loads(native_scan.read_text())
-    if native.get('descriptor', {}).get('name') != 'grype' or not isinstance(native.get('matches'), list):
-        raise ValueError('Actual Grype native scan required')
+    validate_native_report(native)
+    report['CustomerServiceNativeScan'] = {'sbom_sha256': hashlib.sha256(sbom.read_bytes()).hexdigest(),
+                                          'report': native}
+    scan.write_text(json.dumps(report, sort_keys=True), encoding='utf-8')
+
+
+def validate_native_report(native):
+    descriptor = native.get('descriptor', {})
+    if (descriptor.get('name') != 'grype' or descriptor.get('version') != '0.121.0'
+            or descriptor.get('db', {}).get('status', {}).get('valid') is not True
+            or native.get('source', {}).get('type') != 'sbom-file'
+            or not isinstance(native.get('matches'), list)):
+        raise ValueError('Actual Grype native scan with valid database required')
     if any(x.get('vulnerability', {}).get('severity', '').upper() in {'HIGH', 'CRITICAL'}
            for x in native['matches']):
         raise ValueError('Unresolved native vulnerabilities')
     if native.get('ignoredMatches'):
         raise ValueError('Native vulnerability exclusions forbidden')
-    report['CustomerServiceNativeScan'] = {'sbom_sha256': hashlib.sha256(sbom.read_bytes()).hexdigest(),
-                                          'report': native}
-    scan.write_text(json.dumps(report, sort_keys=True), encoding='utf-8')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
     sub.add_parser('probe')
+    control = sub.add_parser('scanner-control')
+    control.add_argument('output', type=Path)
+    check_control = sub.add_parser('check-scanner-control')
+    check_control.add_argument('report', type=Path)
     build = sub.add_parser('metadata')
     build.add_argument('library', type=Path)
     build.add_argument('output', type=Path)
@@ -107,6 +125,18 @@ def main():
     args = parser.parse_args()
     if args.action == 'probe':
         probe()
+    elif args.action == 'scanner-control':
+        args.output.write_text(json.dumps({'bomFormat': 'CycloneDX', 'specVersion': '1.6', 'version': 1,
+            'components': [{'type': 'library', 'name': 'sqlite', 'version': '3.46.1',
+                            'purl': 'pkg:generic/sqlite/sqlite@3.46.1',
+                            'cpe': 'cpe:2.3:a:sqlite:sqlite:3.46.1:*:*:*:*:*:*:*',
+                            'bom-ref': 'sqlite-known-vulnerable-control'}]}), encoding='utf-8')
+    elif args.action == 'check-scanner-control':
+        report = json.loads(args.report.read_text())
+        if not any(x.get('vulnerability', {}).get('id') == 'CVE-2025-3277'
+                   and x.get('vulnerability', {}).get('severity', '').upper() == 'CRITICAL'
+                   for x in report.get('matches', [])):
+            raise ValueError('Native scanner failed known-vulnerable SQLite control')
     elif args.action == 'metadata':
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps({'bomFormat': 'CycloneDX', 'specVersion': '1.6',

@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 import pytest
-from scripts.sqlite_runtime import component, validate_component, enrich, bind_scan
+from scripts.sqlite_runtime import component, validate_component, enrich, bind_scan, validate_native_report
 
 
 def test_component_pins_upstream_source_and_actual_binary():
@@ -24,27 +24,45 @@ def test_enrichment_refuses_old_debian_library_and_conflicts(tmp_path):
     enrich(sbom, native)
     enrich(sbom, native)
     assert json.loads(sbom.read_text())['components'] == [component(b'new binary')]
+    normalized = component(b'new binary')
+    del normalized['cpe']
+    del normalized['properties']
+    sbom.write_text(json.dumps({'components':[normalized]}))
+    enrich(sbom, native)
+    assert json.loads(sbom.read_text())['components'] == [component(b'new binary')]
     bad = component(b'another binary')
     sbom.write_text(json.dumps({'components': [bad]}))
     with pytest.raises(ValueError, match='Conflicting'):
         enrich(sbom, native)
 
 
-@pytest.mark.parametrize('mode', ['high', 'critical', 'ignored', 'missing'])
+@pytest.mark.parametrize('mode', ['high', 'critical', 'ignored', 'missing', 'invalid_db', 'wrong_source', 'wrong_version'])
 def test_native_scan_cannot_be_omitted_or_suppressed(tmp_path, mode):
     scan, native, sbom = [tmp_path/x for x in ('scan.json','native.json','sbom.json')]
     scan.write_text('{}')
     sbom.write_text('{}')
-    report = {'descriptor': {'name':'grype'}, 'matches': []}
+    report = {'descriptor': {'name':'grype', 'version':'0.121.0','db':{'status':{'valid':True}}},
+              'source':{'type':'sbom-file'}, 'matches': []}
     if mode in ('high', 'critical'):
         report['matches'] = [{'vulnerability': {'severity': mode.title()}}]
     elif mode == 'ignored':
         report['ignoredMatches'] = [{'synthetic':True}]
-    else:
+    elif mode == 'missing':
         del report['matches']
+    elif mode == 'invalid_db':
+        report['descriptor']['db']['status']['valid'] = False
+    elif mode == 'wrong_version':
+        report['descriptor']['version'] = 'synthetic'
+    else:
+        report['source']['type'] = 'directory'
     native.write_text(json.dumps(report))
     with pytest.raises(ValueError):
         bind_scan(scan, native, sbom)
+
+
+def test_native_report_with_valid_database_and_zero_findings():
+    validate_native_report({'descriptor':{'name':'grype','version':'0.121.0','db':{'status':{'valid':True}}},
+                            'source':{'type':'sbom-file'},'matches':[]})
 
 
 def test_native_build_and_ci_keep_remediation_and_coverage():

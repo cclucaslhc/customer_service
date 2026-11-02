@@ -18,6 +18,7 @@ ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'scripts'))
 from verify_image_rebuild import image_digest
 from verify_sbom import verify_sbom
+from sqlite_runtime import validate_native_report
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,Ed25519PublicKey
 
@@ -65,14 +66,9 @@ def build_evidence(oci,sbom,scan,*,signature_policy='explicit-pinned-ed25519-v1'
         raise ValueError('Unresolved high or critical vulnerabilities')
     native=report.get('CustomerServiceNativeScan',{})
     native_report=native.get('report',{})
-    if (native.get('sbom_sha256')!=digest_file(sbom)['sha256']
-            or native_report.get('descriptor',{}).get('name')!='grype'
-            or not isinstance(native_report.get('matches'),list)
-            or native_report.get('ignoredMatches')):
+    if native.get('sbom_sha256')!=digest_file(sbom)['sha256']:
         raise ValueError('Native SQLite scan coverage bound to SBOM required')
-    if any(x.get('vulnerability',{}).get('severity','').upper() in {'HIGH','CRITICAL'}
-           for x in native_report['matches']):
-        raise ValueError('Unresolved native high or critical vulnerabilities')
+    validate_native_report(native_report)
     return {'format':'customer-service-release-evidence-v1','oci_manifest':subject,'oci_config':config,
         'artifacts':{'oci':digest_file(oci),'sbom':digest_file(sbom),'scan':digest_file(scan)},
         'scan_gate':'HIGH_CRITICAL_ZERO','signature_policy':signature_policy}

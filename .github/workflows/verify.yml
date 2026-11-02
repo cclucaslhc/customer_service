@@ -256,6 +256,11 @@ jobs:
           echo "64e07133d3486115de647a66581461dccf5c732748a0a3119077395565f15519  $RUNNER_TEMP/grype.tar.gz" | sha256sum -c -
           mkdir "$RUNNER_TEMP/grype-bin"
           tar -xzf "$RUNNER_TEMP/grype.tar.gz" -C "$RUNNER_TEMP/grype-bin" grype
+          python3 scripts/sqlite_runtime.py scanner-control "$RUNNER_TEMP/sqlite-vulnerable-control.cdx.json"
+          if "$RUNNER_TEMP/grype-bin/grype" "sbom:$RUNNER_TEMP/sqlite-vulnerable-control.cdx.json" --fail-on high -o json > "$RUNNER_TEMP/sqlite-vulnerable-control.json"; then
+            echo 'Native scanner missed deliberately vulnerable SQLite'; exit 1
+          fi
+          python3 scripts/sqlite_runtime.py check-scanner-control "$RUNNER_TEMP/sqlite-vulnerable-control.json"
           "$RUNNER_TEMP/grype-bin/grype" "sbom:$RUNNER_TEMP/customer-service-sbom.cdx.json" --fail-on high -o json > "$RUNNER_TEMP/customer-service-native-vulnerabilities.json"
           python3 scripts/sqlite_runtime.py bind-scan "$RUNNER_TEMP/customer-service-vulnerabilities.json" "$RUNNER_TEMP/customer-service-native-vulnerabilities.json" "$RUNNER_TEMP/customer-service-sbom.cdx.json"
           .venv/bin/python ops/release/evidence.py create \

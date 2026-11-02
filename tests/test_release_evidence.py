@@ -30,7 +30,8 @@ def evidence(tmp_path):
     scan.write_text(json.dumps({'SchemaVersion':2,'ArtifactType':'container_image','Metadata':{'ImageID':config},
         'Results':[{'Class':'os-pkgs','Vulnerabilities':[]},{'Class':'lang-pkgs','Vulnerabilities':[]}],
         'CustomerServiceNativeScan':{'sbom_sha256':hashlib.sha256(sbom.read_bytes()).hexdigest(),
-          'report':{'descriptor':{'name':'grype'},'matches':[]}}}))
+          'report':{'descriptor':{'name':'grype','version':'0.121.0','db':{'status':{'valid':True}}},
+                    'source':{'type':'sbom-file'},'matches':[]}}}))
     key=Ed25519PrivateKey.generate()
     private=tmp_path/'synthetic-private.pem'
     private.write_bytes(key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()))
