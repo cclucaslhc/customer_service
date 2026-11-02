@@ -8,6 +8,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from test_verify_image_rebuild import oci_archive
+from scripts.sqlite_runtime import component
 
 ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('release_evidence',ROOT/'ops/release/evidence.py')
@@ -24,10 +25,12 @@ def evidence(tmp_path):
     sbom.write_text(json.dumps({'bomFormat':'CycloneDX','specVersion':'1.6',
         'metadata':{'component':{'properties':[{'name':'aquasecurity:trivy:ImageID','value':config}]}},
         'components':[{'purl':'pkg:deb/debian/'+name+'@1'} for name in (
-            'libgcc-s1','libffi8','libsqlite3-0','libstdc%2B%2B6')]+[{'purl':'pkg:pypi/synthetic@1'}]}))
+            'libgcc-s1','libffi8','libstdc%2B%2B6')]+[{'purl':'pkg:pypi/synthetic@1'},component(b'synthetic sqlite')]}))
     scan=tmp_path/'scan.json'
     scan.write_text(json.dumps({'SchemaVersion':2,'ArtifactType':'container_image','Metadata':{'ImageID':config},
-        'Results':[{'Class':'os-pkgs','Vulnerabilities':[]},{'Class':'lang-pkgs','Vulnerabilities':[]}]}))
+        'Results':[{'Class':'os-pkgs','Vulnerabilities':[]},{'Class':'lang-pkgs','Vulnerabilities':[]}],
+        'CustomerServiceNativeScan':{'sbom_sha256':hashlib.sha256(sbom.read_bytes()).hexdigest(),
+          'report':{'descriptor':{'name':'grype'},'matches':[]}}}))
     key=Ed25519PrivateKey.generate()
     private=tmp_path/'synthetic-private.pem'
     private.write_bytes(key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()))
@@ -87,12 +90,16 @@ def test_signature_requires_out_of_band_pinned_identity(evidence):
     with pytest.raises(ValueError,match='not trusted'): release.verify(manifest,signature,public,pin,image,sbom,scan)
 
 
-@pytest.mark.parametrize('change',['wrong_image','high','no_language'])
+@pytest.mark.parametrize('change',['wrong_image','high','no_language','no_native','native_high','native_wrong_inventory','native_ignored'])
 def test_release_creation_refuses_unbound_or_failed_scan(evidence,tmp_path,change):
     image,sbom,scan,*_=evidence
     value=json.loads(scan.read_text())
     if change=='wrong_image': value['Metadata']['ImageID']='sha256:'+'0'*64
     elif change=='high': value['Results'][0]['Vulnerabilities']=[{'Severity':'HIGH','VulnerabilityID':'synthetic'}]
-    else: value['Results']=value['Results'][:1]
+    elif change=='no_language': value['Results']=value['Results'][:1]
+    elif change=='no_native': del value['CustomerServiceNativeScan']
+    elif change=='native_high': value['CustomerServiceNativeScan']['report']['matches']=[{'vulnerability':{'severity':'High'}}]
+    elif change=='native_ignored': value['CustomerServiceNativeScan']['report']['ignoredMatches']=[{'synthetic':True}]
+    else: value['CustomerServiceNativeScan']['sbom_sha256']='0'*64
     scan.write_text(json.dumps(value))
     with pytest.raises(ValueError): release.create(image,sbom,scan,tmp_path/'rejected.json')

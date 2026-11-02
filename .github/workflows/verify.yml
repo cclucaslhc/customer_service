@@ -134,6 +134,8 @@ jobs:
         run: docker build --pull --platform linux/amd64 --tag customer-service:verify .
       - name: Check artifact identity and offline startup
         run: |
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            customer-service:verify python scripts/sqlite_runtime.py probe
           test "$(docker image inspect customer-service:verify --format '{{.Config.User}}')" = '65532:65532'
           test "$(docker image inspect customer-service:verify --format '{{json .Config.Entrypoint}}')" = 'null'
           docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
@@ -228,7 +230,11 @@ jobs:
             image --input /scan/customer-service-oci --format cyclonedx \
             --output /scan/customer-service-sbom.cdx.json --timeout 10m
       - name: Verify SBOM package inventories
-        run: python3 scripts/verify_sbom.py "$RUNNER_TEMP/customer-service-sbom.cdx.json"
+        run: |
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            customer-service:verify python -c 'from pathlib import Path; print(Path("/usr/share/customer-service/native/sqlite3.cdx.json").read_text())' > "$RUNNER_TEMP/sqlite3.cdx.json"
+          python3 scripts/sqlite_runtime.py enrich "$RUNNER_TEMP/customer-service-sbom.cdx.json" "$RUNNER_TEMP/sqlite3.cdx.json"
+          python3 scripts/verify_sbom.py "$RUNNER_TEMP/customer-service-sbom.cdx.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: customer-service-sbom
@@ -244,6 +250,14 @@ jobs:
             --output /scan/customer-service-vulnerabilities.json --timeout 10m
       - name: Bind OCI, SBOM and passing scan into release evidence
         run: |
+          # Trivy covers Debian/Python; Grype additionally matches upstream native
+          # CPEs. Do not drop SQLite from inventory or ignore the Debian finding.
+          curl --fail --location --retry 3 https://github.com/anchore/grype/releases/download/v0.121.0/grype_0.121.0_linux_amd64.tar.gz -o "$RUNNER_TEMP/grype.tar.gz"
+          echo "64e07133d3486115de647a66581461dccf5c732748a0a3119077395565f15519  $RUNNER_TEMP/grype.tar.gz" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/grype-bin"
+          tar -xzf "$RUNNER_TEMP/grype.tar.gz" -C "$RUNNER_TEMP/grype-bin" grype
+          "$RUNNER_TEMP/grype-bin/grype" "sbom:$RUNNER_TEMP/customer-service-sbom.cdx.json" --fail-on high -o json > "$RUNNER_TEMP/customer-service-native-vulnerabilities.json"
+          python3 scripts/sqlite_runtime.py bind-scan "$RUNNER_TEMP/customer-service-vulnerabilities.json" "$RUNNER_TEMP/customer-service-native-vulnerabilities.json" "$RUNNER_TEMP/customer-service-sbom.cdx.json"
           .venv/bin/python ops/release/evidence.py create \
             --signature-policy github-oidc-slsa-v1 \
             --oci "$RUNNER_TEMP/customer-service-image.oci.tar" \

@@ -1,5 +1,7 @@
 # 生产日志、指标、告警与费用规范
 
+2026-11-02说明：本页保留分阶段实现过程，下面“尚无OTel”“未实现预算”“需提供真实渠道”等只对应各自历史批次，不代表当前代码。当前日志namespace/权限/加速留存、完整Collector及API→Worker关联、Grafana真实查询、认证Alertmanager接收端、PG账本/预算与本地推理计量均已有隔离实测。真实外部送达和供应商账单由用户明确跳过，保持未验证；生产容量、正式生产部署/读取角色、严格逐条TTL不在已有隔离证据中冒充通过。当前S2仍须最终CI/发布信任/Git收尾，逐项证据以[最终验收账本](s2-final-acceptance.md)为准。
+
 状态：部分基础能力已实现；生产监控平台、真实值班接收人、完整费用路径和正式多机验收尚未完成。已有健康探针、运行/工具状态、管理审计及私有观测出口，不能据此通过完整 S2。最新 0025 共享模型熔断指标/告警见下节；更早章节的限制应按当时批次解读。
 
 2026-10-18 熔断增量：认证 PostgreSQL 且显式启用私有 loopback metrics 时，`ModelCircuitMetrics` 以只读短事务输出 `customer_service_model_circuit_collection_success`、采集时间戳、固定三种状态数量及耐久累计打开次数；无租户、模型、用户、正文或密钥标签。失败显示 `success=0`，不能把其余零值当健康。多个 API 实例读取同一全库数据时只采一个聚合 target 或明确去重。[熔断操作](model-circuit-operations.md)和[告警规则](../ops/prometheus/model-circuit-alerts.yml)记录阈值与处置；真实 promtool 解析/场景评估 **2 passed**，隔离 Prometheus→Alertmanager→回环 webhook 的 firing/resolved 两场景 **2 passed**，真实 PostgreSQL 熔断/预算指标及认证回环抓取联合 **12 passed**。没有正式平台、真实值班接收人、TLS/ACL、双机切主或通知升级链，不勾选完整 S2。

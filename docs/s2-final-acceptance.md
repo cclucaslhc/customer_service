@@ -2,6 +2,8 @@
 
 ## 2026-11-02 最新复核（优先于下文历史批次）
 
+后续验收分支`e4b7252d443c62c511b656232cb8f1319aec1223`的CI [41458328755](https://github.com/cclucaslhc/customer_service/actions/runs/41458328755)：后端（含审计）、前端、NGINX通过；镜像独立重建/SBOM通过后，扫描发现Debian SQLite `CVE-2026-119373` HIGH而失败。Debian尚无修复包；SQLite官方3.54.0已修复。现改为固定上游源码/官方sqlite3.c SHA3与固定GCC镜像构建实际库，保留FTS5，并增加实际加载/源ID/负rowid官方回归；清单改为真实上游组件而非伪造Debian版本，另加Grype原生CPE扫描并绑定原始报告。尚待真实镜像验收，不将源码修复当扫描成功。本次修改后Python3.12全量603 passed/384 skipped/6 warnings（31.49秒），相关29 passed；旧592组不覆盖此新增变更。
+
 用户再次明确本轮跳过真实账单对账；与真实外部告警送达一样保留“未验证”，不计为通过。
 
 - 支持Python最低版本调整为3.11，生产继续Python3.12；原3.10虚拟环境未覆盖。独立Python3.12.15环境按锁安装，145个已安装包依赖一致；全量592 passed /384 skipped /9 warnings，49.41秒。跳过不算通过，警告为jieba转义及PydanticAI旧httpx接口弃用。

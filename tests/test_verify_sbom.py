@@ -3,6 +3,7 @@ import json
 import pytest
 
 from scripts.verify_sbom import verify_sbom
+from scripts.sqlite_runtime import component
 
 
 def test_verify_sbom_requires_both_runtime_package_types(tmp_path):
@@ -16,7 +17,7 @@ def test_verify_sbom_requires_both_runtime_package_types(tmp_path):
                     {"purl": "pkg:deb/debian/libxml2@2.0"},
                     {"purl": "pkg:deb/debian/libgcc-s1@14.2.0"},
                     {"purl": "pkg:deb/debian/libffi8@3.4.8"},
-                    {"purl": "pkg:deb/debian/libsqlite3-0@3.46.1"},
+                    component(b'synthetic native SQLite'),
                     {"purl": "pkg:deb/debian/libstdc%2B%2B6@14.2.0"},
                     {"purl": "pkg:pypi/pydantic-ai-slim@2.0"},
                 ],
@@ -24,7 +25,7 @@ def test_verify_sbom_requires_both_runtime_package_types(tmp_path):
         ),
         encoding="utf-8",
     )
-    assert verify_sbom(path) == (5, 1)
+    assert verify_sbom(path) == (4, 1)
 
     path.write_text(
         json.dumps({"bomFormat": "CycloneDX", "specVersion": "1.6", "components": []}),

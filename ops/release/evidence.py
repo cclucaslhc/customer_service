@@ -63,6 +63,16 @@ def build_evidence(oci,sbom,scan,*,signature_policy='explicit-pinned-ed25519-v1'
         raise ValueError('Both OS and language scan coverage required')
     if any(v.get('Severity') in ('HIGH','CRITICAL') for item in results for v in (item.get('Vulnerabilities') or [])):
         raise ValueError('Unresolved high or critical vulnerabilities')
+    native=report.get('CustomerServiceNativeScan',{})
+    native_report=native.get('report',{})
+    if (native.get('sbom_sha256')!=digest_file(sbom)['sha256']
+            or native_report.get('descriptor',{}).get('name')!='grype'
+            or not isinstance(native_report.get('matches'),list)
+            or native_report.get('ignoredMatches')):
+        raise ValueError('Native SQLite scan coverage bound to SBOM required')
+    if any(x.get('vulnerability',{}).get('severity','').upper() in {'HIGH','CRITICAL'}
+           for x in native_report['matches']):
+        raise ValueError('Unresolved native high or critical vulnerabilities')
     return {'format':'customer-service-release-evidence-v1','oci_manifest':subject,'oci_config':config,
         'artifacts':{'oci':digest_file(oci),'sbom':digest_file(sbom),'scan':digest_file(scan)},
         'scan_gate':'HIGH_CRITICAL_ZERO','signature_policy':signature_policy}

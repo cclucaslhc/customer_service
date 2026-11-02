@@ -6,9 +6,13 @@ import argparse
 import json
 from pathlib import Path
 from urllib.parse import unquote
+try:
+    from .sqlite_runtime import PURL, validate_component
+except ImportError:  # Direct CLI invocation.
+    from sqlite_runtime import PURL, validate_component
 
 
-COPIED_RUNTIME_PACKAGES = frozenset({"libgcc-s1", "libffi8", "libsqlite3-0", "libstdc++6"})
+COPIED_RUNTIME_PACKAGES = frozenset({"libgcc-s1", "libffi8", "libstdc++6"})
 
 
 def verify_sbom(path: Path) -> tuple[int, int]:
@@ -27,6 +31,10 @@ def verify_sbom(path: Path) -> tuple[int, int]:
              for purl in purls if purl.startswith("pkg:deb/debian/") and "@" in purl}
     if not COPIED_RUNTIME_PACKAGES <= names:
         raise ValueError("SBOM omits copied native runtime package provenance")
+    native = [item for item in components if item.get('purl') == PURL]
+    if 'libsqlite3-0' in names or len(native) != 1:
+        raise ValueError('SBOM requires actual upstream SQLite, not old Debian metadata')
+    validate_component(native[0])
     return debian, python
 
 
