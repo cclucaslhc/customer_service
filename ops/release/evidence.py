@@ -68,10 +68,12 @@ def build_evidence(oci,sbom,scan,*,signature_policy='explicit-pinned-ed25519-v1'
     native_report=native.get('report',{})
     if native.get('sbom_sha256')!=digest_file(sbom)['sha256']:
         raise ValueError('Native SQLite scan coverage bound to SBOM required')
-    validate_native_report(native_report)
+    validate_native_report(native_report,inventory,native.get('vex'))
     return {'format':'customer-service-release-evidence-v1','oci_manifest':subject,'oci_config':config,
         'artifacts':{'oci':digest_file(oci),'sbom':digest_file(sbom),'scan':digest_file(scan)},
-        'scan_gate':'HIGH_CRITICAL_ZERO','signature_policy':signature_policy}
+        'scan_gate':'HIGH_CRITICAL_ZERO','signature_policy':signature_policy,
+        'native_not_affected_findings':[{'id':x['vulnerability']['id'],'status':'not_affected',
+             'justification':'vulnerable_code_not_present'} for x in native_report.get('ignoredMatches') or []]}
 
 
 def create(oci,sbom,scan,output,*,signature_policy='explicit-pinned-ed25519-v1'):

@@ -4,6 +4,8 @@ import hashlib
 import json
 from pathlib import Path
 import sqlite3
+import ctypes
+import shutil
 
 VERSION = '3.54.0'
 ARCHIVE_SHA256 = '134ec0802dda5795816e25d25872d20b312cb3973438c49b30bc40b7705ea9ed'
@@ -13,6 +15,7 @@ PURL = 'pkg:generic/sqlite/sqlite@' + VERSION
 CPE = 'cpe:2.3:a:sqlite:sqlite:' + VERSION + ':*:*:*:*:*:*:*'
 LIBRARY = Path('/usr/local/lib/libsqlite3.so.0')
 METADATA = Path('/usr/share/customer-service/native/sqlite3.cdx.json')
+VEX_PATH = Path(__file__).resolve().parents[1] / 'ops/release/sqlite-library.openvex.json'
 
 
 def component(binary):
@@ -20,7 +23,8 @@ def component(binary):
             'bom-ref': PURL, 'cpe': CPE,
             'hashes': [{'alg': 'SHA-256', 'content': hashlib.sha256(binary).hexdigest()}],
             'properties': [{'name': 'customer-service:source:archive-sha256', 'value': ARCHIVE_SHA256},
-                           {'name': 'customer-service:source:sqlite3.c-sha3-256', 'value': SOURCE_SHA3}],
+                           {'name': 'customer-service:source:sqlite3.c-sha3-256', 'value': SOURCE_SHA3},
+                           {'name': 'customer-service:build:sqlite-mode', 'value': 'library-only-amalgamation-v1'}],
             'externalReferences': [{'type': 'distribution', 'url': 'https://sqlite.org/2026/sqlite-autoconf-3540000.tar.gz'}]}
 
 
@@ -43,6 +47,10 @@ def probe():
     actual = component(LIBRARY.read_bytes())
     if inventory.get('components') != [actual] or sqlite3.sqlite_version != VERSION:
         raise ValueError('SQLite loaded version or actual library differs')
+    library = ctypes.CDLL(str(LIBRARY))
+    if shutil.which('sqlite3') is not None or any(hasattr(library, name) for name in (
+            'sqlite3_recover_init', 'sqlite3_recover_run', 'sqlite3_shell_init')):
+        raise ValueError('SQLite CLI/recovery code unexpectedly present')
     with sqlite3.connect(':memory:') as db:
         if db.execute('select sqlite_source_id()').fetchone()[0] != SOURCE_ID:
             raise ValueError('SQLite source ID differs')
@@ -53,7 +61,7 @@ def probe():
                            [(i, 'ab') for i in range(1, 56)] + [(-9223372036854775808, 'abc')])
             if db.execute(f"SELECT count(*) FROM t_{detail}('a*')").fetchone()[0] != 56:
                 raise ValueError('SQLite FTS5 regression failed')
-    print('SQLite actual library/source/FTS5 negative-rowid regression verified: ' + VERSION)
+    print('SQLite actual library/source/absent CLI/recovery/FTS5 regression verified: ' + VERSION)
 
 
 def enrich(sbom, native):
@@ -84,24 +92,48 @@ def enrich(sbom, native):
 def bind_scan(scan, native_scan, sbom):
     report = json.loads(scan.read_text())
     native = json.loads(native_scan.read_text())
-    validate_native_report(native)
+    vex = json.loads(VEX_PATH.read_text())
+    validate_native_report(native, json.loads(sbom.read_text()), vex)
     report['CustomerServiceNativeScan'] = {'sbom_sha256': hashlib.sha256(sbom.read_bytes()).hexdigest(),
-                                          'report': native}
+                                          'report': native, 'vex': vex}
     scan.write_text(json.dumps(report, sort_keys=True), encoding='utf-8')
 
 
-def validate_native_report(native):
+def validate_native_report(native, inventory=None, vex=None):
     descriptor = native.get('descriptor', {})
+    source = native.get('source', {})
+    source_valid = source.get('type') == 'sbom-file'
+    # Grype reconstructs image source metadata from a real container CDX. Its
+    # generated imageID is not an OCI digest; bind the original name to the
+    # exact SBOM, whose Trivy ImageID and bytes are checked by release evidence.
+    if source.get('type') == 'image' and inventory is not None:
+        root = inventory.get('metadata', {}).get('component', {})
+        source_valid = (root.get('type') == 'container' and bool(root.get('name'))
+                        and source.get('target', {}).get('userInput') == root['name'])
     if (descriptor.get('name') != 'grype' or descriptor.get('version') != '0.121.0'
             or descriptor.get('db', {}).get('status', {}).get('valid') is not True
-            or native.get('source', {}).get('type') != 'sbom-file'
+            or not source_valid
             or not isinstance(native.get('matches'), list)):
         raise ValueError('Actual Grype native scan with valid database required')
     if any(x.get('vulnerability', {}).get('severity', '').upper() in {'HIGH', 'CRITICAL'}
            for x in native['matches']):
         raise ValueError('Unresolved native vulnerabilities')
-    if native.get('ignoredMatches'):
-        raise ValueError('Native vulnerability exclusions forbidden')
+    if vex is not None and vex != json.loads(VEX_PATH.read_text()):
+        raise ValueError('Unapproved native VEX policy')
+    ignored = native.get('ignoredMatches') or []
+    if ignored:
+        components = (inventory or {}).get('components', [])
+        sqlite = [x for x in components if x.get('purl') == PURL]
+        if vex is None or len(sqlite) != 1 or len(ignored) != 1:
+            raise ValueError('Native vulnerability exclusions forbidden')
+        validate_component(sqlite[0])
+        item = ignored[0]
+        artifact = item.get('artifact', {})
+        vulnerability = item.get('vulnerability', {})
+        if (vulnerability.get('id') != 'CVE-2026-119586' or vulnerability.get('namespace') != 'nvd:cpe'
+                or artifact.get('purl') != PURL or artifact.get('version') != VERSION
+                or item.get('appliedIgnoreRules') != [{'namespace': 'vex', 'vex-status': 'not_affected'}]):
+            raise ValueError('Only absent SQLite CLI code has a reviewed not-affected determination')
 
 
 def main():

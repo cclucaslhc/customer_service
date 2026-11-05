@@ -1,5 +1,11 @@
 # S2 最终验收账本
 
+## 2026-11-05 当前状态
+
+本次修复后独立Python3.12全量616 passed/384 skipped/6 warnings（36.93秒）；当日重新运行完整锁导出的pip-audit为0已知漏洞。跳过不算通过，Grype报告中低/中危不伪装为不存在；正式阻断门槛仍为所有未解决HIGH/CRITICAL。
+
+S2仍在验收，不宣布完成。CI 41461618079四测试作业全部通过；实际OCI独立重建、库存和Trivy 0 HIGH/CRITICAL通过，原生扫描通过后被校验器的来源类型假设误拒绝。真实SBOM下载与摘要已核查，正在修复容器SBOM来源绑定。新库另检出仅影响未安装SQLite CLI的CVE-2026-119586：增加严格限定的代码不存在判定、实际CLI/恢复入口缺失探针及原始发现/VEX/发布清单绑定，不将它伪装成升级修复或原始0发现。详细证据及历史边界见[SQLite安全记录](s2-sqlite-security.md)。真实外部送达与账单继续按用户决定未验证。最终CI、OIDC及main交付仍待完成。
+
 ## 2026-11-02 最新复核（优先于下文历史批次）
 
 后续验收分支`e4b7252d443c62c511b656232cb8f1319aec1223`的CI [41458328755](https://github.com/cclucaslhc/customer_service/actions/runs/41458328755)：后端（含审计）、前端、NGINX通过；镜像独立重建/SBOM通过后，扫描发现Debian SQLite `CVE-2026-119373` HIGH而失败。Debian尚无修复包；SQLite官方3.54.0已修复。现改为固定上游源码/官方sqlite3.c SHA3与固定GCC镜像构建实际库，保留FTS5，并增加实际加载/源ID/负rowid官方回归；清单改为真实上游组件而非伪造Debian版本，另加Grype原生CPE扫描并绑定原始报告。尚待真实镜像验收，不将源码修复当扫描成功。本次修改后Python3.12全量603 passed/384 skipped/6 warnings（31.49秒），相关29 passed；旧592组不覆盖此新增变更。

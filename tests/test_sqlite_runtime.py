@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 import pytest
-from scripts.sqlite_runtime import component, validate_component, enrich, bind_scan, validate_native_report
+from scripts.sqlite_runtime import component, validate_component, enrich, bind_scan, validate_native_report, VEX_PATH, PURL
 
 
 def test_component_pins_upstream_source_and_actual_binary():
@@ -65,6 +65,52 @@ def test_native_report_with_valid_database_and_zero_findings():
                             'source':{'type':'sbom-file'},'matches':[]})
 
 
+def test_real_container_sbom_source_is_bound_to_inventory_name():
+    report={'descriptor':{'name':'grype','version':'0.121.0','db':{'status':{'valid':True}}},
+            'source':{'type':'image','target':{'userInput':'/scan/actual-oci'}},'matches':[]}
+    inventory={'metadata':{'component':{'type':'container','name':'/scan/actual-oci'}}}
+    validate_native_report(report,inventory)
+    with pytest.raises(ValueError):
+        validate_native_report(report)
+    report['source']['target']['userInput']='/scan/other-oci'
+    with pytest.raises(ValueError):
+        validate_native_report(report,inventory)
+
+
+def library_only_report():
+    return {'descriptor':{'name':'grype','version':'0.121.0','db':{'status':{'valid':True}}},
+            'source':{'type':'sbom-file'},'matches':[],
+            'ignoredMatches':[{'vulnerability':{'id':'CVE-2026-119586','namespace':'nvd:cpe'},
+                              'artifact':{'purl':PURL,'version':'3.54.0'},
+                              'appliedIgnoreRules':[{'namespace':'vex','vex-status':'not_affected'}]}]}
+
+
+def test_cli_only_finding_requires_exact_reviewed_vex_and_native_provenance():
+    report = library_only_report()
+    inventory = {'components':[component(b'synthetic shared library')]}
+    vex = json.loads(VEX_PATH.read_text())
+    validate_native_report(report,inventory,vex)
+    with pytest.raises(ValueError):
+        validate_native_report(report,inventory)
+    vex['statements'][0]['status']='fixed'
+    with pytest.raises(ValueError):
+        validate_native_report(report,inventory,vex)
+
+
+@pytest.mark.parametrize('change',['other_cve','other_package','other_rule','extra_finding','no_provenance'])
+def test_cli_determination_cannot_exclude_other_vulnerabilities(change):
+    report=library_only_report()
+    inventory={'components':[component(b'synthetic library')]}
+    item=report['ignoredMatches'][0]
+    if change=='other_cve': item['vulnerability']['id']='CVE-2026-119373'
+    elif change=='other_package': item['artifact']['purl']='pkg:generic/other@1'
+    elif change=='other_rule': item['appliedIgnoreRules']=[{'namespace':'manual-ignore'}]
+    elif change=='extra_finding': report['ignoredMatches'].append(item.copy())
+    else: inventory['components'][0]['properties']=[]
+    with pytest.raises(ValueError):
+        validate_native_report(report,inventory,json.loads(VEX_PATH.read_text()))
+
+
 def test_native_build_and_ci_keep_remediation_and_coverage():
     root = Path(__file__).resolve().parents[1]
     build = (root/'Dockerfile').read_text()
@@ -77,3 +123,4 @@ def test_native_build_and_ci_keep_remediation_and_coverage():
     assert 'scripts/sqlite_runtime.py enrich' in workflow
     assert 'scripts/sqlite_runtime.py bind-scan' in workflow
     assert '--fail-on high -o json' in workflow
+    assert '--vex "$GITHUB_WORKSPACE/ops/release/sqlite-library.openvex.json"' in workflow

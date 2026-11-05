@@ -9,6 +9,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from test_verify_image_rebuild import oci_archive
 from scripts.sqlite_runtime import component
+from scripts.sqlite_runtime import VEX_PATH
 
 ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('release_evidence',ROOT/'ops/release/evidence.py')
@@ -47,6 +48,25 @@ def evidence(tmp_path):
 def test_signature_verifies_actual_image_inventory_and_scan(evidence):
     image,sbom,scan,manifest,signature,public,pin,digest=evidence
     assert release.verify(manifest,signature,public,pin,image,sbom,scan)==digest
+
+
+def test_signed_evidence_exposes_exact_cli_not_affected_determination(evidence,tmp_path):
+    image,sbom,scan,*_=evidence
+    value=json.loads(scan.read_text())
+    value['CustomerServiceNativeScan']['vex']=json.loads(VEX_PATH.read_text())
+    value['CustomerServiceNativeScan']['report']['ignoredMatches']=[{
+        'vulnerability':{'id':'CVE-2026-119586','namespace':'nvd:cpe'},
+        'artifact':{'purl':'pkg:generic/sqlite/sqlite@3.54.0','version':'3.54.0'},
+        'appliedIgnoreRules':[{'namespace':'vex','vex-status':'not_affected'}]}]
+    scan.write_text(json.dumps(value))
+    target=tmp_path/'reviewed.json'
+    release.create(image,sbom,scan,target)
+    assert json.loads(target.read_text())['native_not_affected_findings']==[
+        {'id':'CVE-2026-119586','status':'not_affected','justification':'vulnerable_code_not_present'}]
+    del value['CustomerServiceNativeScan']['vex']
+    scan.write_text(json.dumps(value))
+    with pytest.raises(ValueError):
+        release.create(image,sbom,scan,tmp_path/'unreviewed.json')
 
 
 def test_binding_check_for_oidc_authenticated_manifest_rejects_changed_artifact(evidence):

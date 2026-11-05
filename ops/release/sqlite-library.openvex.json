@@ -1,0 +1,16 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/cclucaslhc/customer_service/security/sqlite-library-20261105",
+  "author": "customer_service build policy",
+  "timestamp": "2026-11-05T14:00:00Z",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {"name": "CVE-2026-119586"},
+      "products": [{"@id": "pkg:generic/sqlite/sqlite@3.54.0"}],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The immutable application image compiles only the hash-pinned sqlite3.c shared library. SQLite shell.c, sqlite3recover.c, the sqlite3 CLI and its .recover/.shell/.system commands are not built or installed. This CLI-only command-injection vulnerability is not present in the shipped library. CI separately checks the actual library/source identity, absent CLI/recovery export and FTS5 regression; all other findings remain blocking."
+    }
+  ]
+}
