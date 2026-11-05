@@ -75,5 +75,6 @@ COPY migrations ./migrations
 COPY alembic.ini ./alembic.ini
 COPY --from=frontend-build /build/frontend/dist ./frontend/dist
 ENV PATH=/opt/customer-service/.venv/bin:/usr/local/bin PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HOME=/tmp LD_LIBRARY_PATH=/usr/local/lib
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 USER 65532:65532
 CMD ["/opt/customer-service/.venv/bin/python", "scripts/serve_api.py"]

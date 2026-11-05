@@ -75,6 +75,8 @@ def test_build_and_ci_retain_upstream_zlib_coverage():
     assert 'zlib-1.4.tar.gz' in build and 'make test' in build
     assert 'prepare-root /runtime-root /build/libz.so.1.4' in build
     assert 'FROM scratch\nCOPY --from=runtime-root /runtime-root/ /' in build
+    assert 'ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt' in build
     workflow=(root/'.github/workflows/verify.yml').read_text()
     assert 'scripts/zlib_runtime.py probe' in workflow
     assert 'scripts/zlib_runtime.py enrich' in workflow
+    assert 'ssl.create_default_context().get_ca_certs()' in workflow

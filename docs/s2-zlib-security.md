@@ -12,6 +12,8 @@
 
 ## 验收门槛
 
+构建根复核还确认：复制根文件系统不会继承原基础镜像配置中的`SSL_CERT_FILE`；该基底仅提供/etc/ssl/certs/ca-certificates.crt，没有Python默认查找别名。最终Dockerfile现显式保留这个CA路径，离线镜像启动门禁实际执行ssl.create_default_context并要求加载非空信任库。没有关闭证书/主机名验证或改为明文模型端点；此增量专项27 passed/2 POSIX skipped，实际容器检查待新CI。
+
 本机修改后独立Python3.12全量621 passed/386 skipped/6 warnings（30.12秒）；专项47 passed/2 skipped。新增两项POSIX构建根用例仅在Linux执行，未被算成本机通过；最终CI后端必须实际执行它们。
 
 实际非root/只读/无网络镜像探针须验证库字节与原生清单、C层zlibVersion及Python ZLIB_RUNTIME_VERSION精确1.4、旧库/旧Debian记录均不存在，并完成gzip/deflate往返。随后仍运行六类文档、迁移/Worker、资源故障、独立OCI重建与完整扫描，不能用往返探针替代完整镜像回归。

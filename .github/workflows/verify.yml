@@ -142,7 +142,7 @@ jobs:
           test "$(docker image inspect customer-service:verify --format '{{json .Config.Entrypoint}}')" = 'null'
           docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
             --entrypoint /opt/customer-service/.venv/bin/python customer-service:verify \
-            -c 'import os; from pathlib import Path; import app.main, app.chat_worker, app.knowledge_worker; assert os.getuid() == 65532 and Path("frontend/dist/index.html").is_file()'
+            -c 'import os, ssl; from pathlib import Path; import app.main, app.chat_worker, app.knowledge_worker; assert os.getuid() == 65532 and Path("frontend/dist/index.html").is_file(); assert os.environ["SSL_CERT_FILE"] == "/etc/ssl/certs/ca-certificates.crt"; assert ssl.create_default_context().get_ca_certs(), "Runtime trust store is empty"'
           docker image inspect customer-service:verify --format 'image_id={{.Id}}'
       - name: Verify parser sandbox and document formats in the actual image
         run: |
