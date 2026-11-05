@@ -4,6 +4,7 @@ import pytest
 
 from scripts.verify_sbom import verify_sbom
 from scripts.sqlite_runtime import component
+from scripts.zlib_runtime import component as zlib_component
 
 
 def test_verify_sbom_requires_both_runtime_package_types(tmp_path):
@@ -18,6 +19,7 @@ def test_verify_sbom_requires_both_runtime_package_types(tmp_path):
                     {"purl": "pkg:deb/debian/libgcc-s1@14.2.0"},
                     {"purl": "pkg:deb/debian/libffi8@3.4.8"},
                     component(b'synthetic native SQLite'),
+                    zlib_component(b'synthetic fixed zlib'),
                     {"purl": "pkg:deb/debian/libstdc%2B%2B6@14.2.0"},
                     {"purl": "pkg:pypi/pydantic-ai-slim@2.0"},
                 ],

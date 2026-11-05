@@ -136,6 +136,8 @@ jobs:
         run: |
           docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
             customer-service:verify python scripts/sqlite_runtime.py probe
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            customer-service:verify python scripts/zlib_runtime.py probe
           test "$(docker image inspect customer-service:verify --format '{{.Config.User}}')" = '65532:65532'
           test "$(docker image inspect customer-service:verify --format '{{json .Config.Entrypoint}}')" = 'null'
           docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
@@ -234,6 +236,9 @@ jobs:
           docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
             customer-service:verify python -c 'from pathlib import Path; print(Path("/usr/share/customer-service/native/sqlite3.cdx.json").read_text())' > "$RUNNER_TEMP/sqlite3.cdx.json"
           python3 scripts/sqlite_runtime.py enrich "$RUNNER_TEMP/customer-service-sbom.cdx.json" "$RUNNER_TEMP/sqlite3.cdx.json"
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            customer-service:verify python -c 'from pathlib import Path; print(Path("/usr/share/customer-service/native/zlib.cdx.json").read_text())' > "$RUNNER_TEMP/zlib.cdx.json"
+          python3 scripts/zlib_runtime.py enrich "$RUNNER_TEMP/customer-service-sbom.cdx.json" "$RUNNER_TEMP/zlib.cdx.json"
           python3 scripts/verify_sbom.py "$RUNNER_TEMP/customer-service-sbom.cdx.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

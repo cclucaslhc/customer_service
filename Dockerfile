@@ -23,6 +23,14 @@ RUN curl --fail --location --retry 3 https://sqlite.org/2026/sqlite-autoconf-354
        -DSQLITE_ENABLE_DBSTAT_VTAB -DSQLITE_ENABLE_UNLOCK_NOTIFY -DSQLITE_SECURE_DELETE \
        -Wl,-soname,libsqlite3.so.0 -o /out/libsqlite3.so.0 sqlite3.c -lm -ldl -lpthread
 
+FROM docker.io/library/golang:1.26.10-bookworm@sha256:23ce71337b726608afb1bc00986e630a05034a87a87ea1fc2cd1ae5cf33387eb AS zlib-build
+WORKDIR /build/zlib
+RUN curl --fail --location --retry 3 https://github.com/madler/zlib/releases/download/v1.4/zlib-1.4.tar.gz -o zlib.tar.gz \
+    && echo '02dd159783677a749c04adbdd02b55b8a2bcc7e054f51b76b549199a916ad584  zlib.tar.gz' | sha256sum -c - \
+    && tar -xzf zlib.tar.gz --strip-components=1 \
+    && CFLAGS='-O2 -fPIC' ./configure --shared --prefix=/out \
+    && make -j2 && make test && make install
+
 FROM docker.io/library/python:3.12-slim-trixie@sha256:cb33f7f771ecec2ef1225cf39b159591a040391bd73e4c01f00fdfc4c47611d2 AS python-build
 COPY --from=ghcr.io/astral-sh/uv:0.13.0@sha256:cdc6093146eb3ff6a40107b38f008b789e050e77ad87865e381d9917da55a168 /uv /uvx /usr/local/bin/
 ENV UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy
@@ -37,7 +45,18 @@ COPY --from=sqlite-build /out/libsqlite3.so.0 /usr/local/lib/libsqlite3.so.0
 COPY scripts/sqlite_runtime.py /build/sqlite_runtime.py
 RUN python /build/sqlite_runtime.py metadata /usr/local/lib/libsqlite3.so.0 /build/native/sqlite3.cdx.json
 
-FROM gcr.io/distroless/base-debian13:nonroot@sha256:6c591b4ac789b683ab3665327181e7cfb7a39b5834f42dcb73d7becb8d18a5d9
+FROM gcr.io/distroless/base-debian13:nonroot@sha256:6c591b4ac789b683ab3665327181e7cfb7a39b5834f42dcb73d7becb8d18a5d9 AS runtime-base
+FROM python-build AS runtime-root
+# Curate an offline copy of the exact base root. Removing the superseded zlib
+# package here removes its real library AND stale Debian inventory; only the
+# hash-pinned upstream replacement and its native SBOM enter the final root.
+COPY --from=runtime-base / /runtime-root/
+COPY --from=zlib-build /out/lib/libz.so.1.4 /build/libz.so.1.4
+COPY scripts/zlib_runtime.py /build/zlib_runtime.py
+RUN python /build/zlib_runtime.py prepare-root /runtime-root /build/libz.so.1.4
+
+FROM scratch
+COPY --from=runtime-root /runtime-root/ /
 WORKDIR /opt/customer-service
 COPY --from=python-build /usr/local/bin/python3.12 /usr/local/bin/python3.12
 COPY --from=python-build /usr/local/bin/python3 /usr/local/bin/python3

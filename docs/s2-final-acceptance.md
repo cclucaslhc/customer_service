@@ -2,6 +2,8 @@
 
 ## 2026-11-05 当前状态
 
+后续CI 42049116316在真实应用扫描发现zlib CVE-2026-76844 HIGH，仍失败而非全绿。已采用当日正式上游1.4固定归档重建，受限构建根真正替换旧库及旧来源，补充实际加载/压缩/原生库存/扫描门禁；没有把zlib加入SQLite CLI的不适用判定。新Linux根文件测试、真实镜像与签名仍待验收，详见[zlib记录](s2-zlib-security.md)。
+
 监控归档补充重扫：固定Grype0.121.0/11月5日有效库扫描Collector及Grafana归档均无HIGH/CRITICAL；Alertmanager旧base归档检出四项系统库HIGH。该程序的两个二进制均CGO_ENABLED=0，不需要libc/zlib，故运行基底改为官方固定摘要distroless/static-debian13 nonroot，真实移除未使用动态库而非隐藏包或忽略告警；新构建扫描及实际接收器测试仍待CI，不用9 passed/1 skipped的本机专项冒充真实接收端通过。
 
 本次修复后独立Python3.12全量616 passed/384 skipped/6 warnings（36.93秒）；当日重新运行完整锁导出的pip-audit为0已知漏洞。跳过不算通过，Grype报告中低/中危不伪装为不存在；正式阻断门槛仍为所有未解决HIGH/CRITICAL。

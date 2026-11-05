@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from test_verify_image_rebuild import oci_archive
 from scripts.sqlite_runtime import component
 from scripts.sqlite_runtime import VEX_PATH
+from scripts.zlib_runtime import component as zlib_component
 
 ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('release_evidence',ROOT/'ops/release/evidence.py')
@@ -26,7 +27,7 @@ def evidence(tmp_path):
     sbom.write_text(json.dumps({'bomFormat':'CycloneDX','specVersion':'1.6',
         'metadata':{'component':{'properties':[{'name':'aquasecurity:trivy:ImageID','value':config}]}},
         'components':[{'purl':'pkg:deb/debian/'+name+'@1'} for name in (
-            'libgcc-s1','libffi8','libstdc%2B%2B6')]+[{'purl':'pkg:pypi/synthetic@1'},component(b'synthetic sqlite')]}))
+            'libgcc-s1','libffi8','libstdc%2B%2B6')]+[{'purl':'pkg:pypi/synthetic@1'},component(b'synthetic sqlite'),zlib_component(b'synthetic zlib')]}))
     scan=tmp_path/'scan.json'
     scan.write_text(json.dumps({'SchemaVersion':2,'ArtifactType':'container_image','Metadata':{'ImageID':config},
         'Results':[{'Class':'os-pkgs','Vulnerabilities':[]},{'Class':'lang-pkgs','Vulnerabilities':[]}],
