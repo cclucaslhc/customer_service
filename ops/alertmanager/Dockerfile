@@ -12,7 +12,9 @@ RUN go get golang.org/x/net@v0.60.0 google.golang.org/grpc@v1.83.2 && go mod ver
 RUN go build -trimpath -buildvcs=false -ldflags='-buildid= -X github.com/prometheus/common/version.Version=0.34.1-cs-s2 -X github.com/prometheus/common/version.Revision=73c6bfe7393929211294c1954f30d8ed78e4d0ad-security-rebuild' -o /out/alertmanager ./cmd/alertmanager && \
     go build -trimpath -buildvcs=false -ldflags='-buildid=' -o /out/amtool ./cmd/amtool && mkdir -p /out/state
 
-FROM gcr.io/distroless/base-debian13:nonroot@sha256:6c591b4ac789b683ab3665327181e7cfb7a39b5834f42dcb73d7becb8d18a5d9
+# Both binaries are CGO_ENABLED=0. They need CA/timezone data, not the dynamic
+# libc/zlib stack in distroless/base. Do not ship unused vulnerable libraries.
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329
 COPY --from=build /out/alertmanager /out/amtool /bin/
 COPY --from=build /source/go.mod /source/go.sum /source/LICENSE /source/NOTICE /usr/share/customer-service-alertmanager/
 COPY --from=build --chown=65532:65532 /out/state/ /alertmanager/

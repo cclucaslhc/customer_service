@@ -100,3 +100,9 @@ def test_editable_scanner_reports_use_unprivileged_runner_identity():
         section=workflow[workflow.index(start):workflow.index(end)]
         assert '--user "$(id -u):$(id -g)"' in section
         assert '--env TRIVY_CACHE_DIR=/tmp/trivy-cache' in section
+
+
+def test_static_alertmanager_does_not_ship_unused_dynamic_libraries():
+    dockerfile=(ROOT/'ops/alertmanager/Dockerfile').read_text()
+    assert 'CGO_ENABLED=0' in dockerfile
+    assert 'FROM gcr.io/distroless/static-debian13:nonroot@sha256:' in dockerfile
