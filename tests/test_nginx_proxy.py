@@ -84,9 +84,15 @@ def proxy(tmp_path_factory):
             try:
                 connection.request('GET', '/ready')
                 response = connection.getresponse()
-                assert response.status == 200
+                status=response.status
                 response.read()
-                break
+                if status==200: break
+                # The proxy may be listening before its synthetic backend is
+                # ready on a loaded runner. Only readiness 502/503 is transient;
+                # persistent errors still fail at the original bounded deadline.
+                assert status in (502,503),'Unexpected readiness response'
+                assert time.monotonic()<deadline,'Proxy backend never became ready'
+                time.sleep(.1)
             except (OSError, http.client.HTTPException):
                 if time.monotonic() >= deadline:
                     raise

@@ -1,0 +1,27 @@
+# Shared-database aggregate: scrape one selected aggregate target, not N sums.
+groups:
+  - name: customer-service-local-inference
+    interval: 30s
+    rules:
+      - alert: CustomerServiceLocalInferenceCollectionUnavailable
+        expr: >-
+          up{job="customer-service-private"} == 0
+          or absent(customer_service_local_inference_collection_success{job="customer-service-private"})
+          or customer_service_local_inference_collection_success{job="customer-service-private"} == 0
+          or (time() - customer_service_local_inference_collection_timestamp_seconds{job="customer-service-private"}) > 300
+        for: 2m
+        labels:
+          severity: critical
+          owner: platform-oncall
+        annotations:
+          summary: Local inference evidence collection is missing, failed or stale
+          runbook: docs/s2-local-inference-accounting.md
+      - alert: CustomerServiceLocalInferenceUnresolved
+        expr: customer_service_local_inference_stale_unresolved{job="customer-service-private"} > 0
+        for: 2m
+        labels:
+          severity: warning
+          owner: service-oncall
+        annotations:
+          summary: Local inference has receipts older than five minutes without a confirmed terminal state
+          runbook: docs/s2-local-inference-accounting.md

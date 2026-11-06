@@ -42,6 +42,7 @@ class HttpTelemetry:
         self.tracing = None
         self.budget_metrics = None
         self.circuit_metrics = None
+        self.local_inference_metrics = None
 
     def record_export(self, outcome):
         with self._lock:
@@ -158,6 +159,8 @@ class HttpTelemetry:
             emit(*self.budget_metrics.prometheus(deadline=deadline,cancel_event=cancel_event))
         if self.circuit_metrics is not None:
             emit(*self.circuit_metrics.prometheus(deadline=deadline,cancel_event=cancel_event))
+        if self.local_inference_metrics is not None:
+            emit(*self.local_inference_metrics.prometheus(deadline=deadline,cancel_event=cancel_event))
         return '\n'.join(lines) + '\n'
 
 

@@ -1,5 +1,39 @@
 # 生产化实施与验收记录
 
+## 2026-11-05 S2 技术验收已通过
+
+最新同一源码2852e4b32cc2435cf4a40a0831bdee0f9d61ba4c的CI 42052908399五作业全部成功，全部应用/监控门禁后签发OIDC证明64103386。最终制品13428489650已下载、ZIP摘要核对、真实仓库/工作流/ref/SHA/SLSAv1/托管runner验签和OCI逐blob/SBOM/原始扫描绑定全部通过；错误main ref负向检查拒绝。全部精确摘要及六项审计结论见[最终账本](s2-final-acceptance.md)。这不是main证明或生产上线批准；main交付按自身实际CI另验，两项用户豁免仍未验证。以下是保留的历史批次。
+
+## 2026-11-05 S2 新原生库候选（部分门禁通过，非最终发布）
+
+源码4ba9fc9c903888e1ea65844cbbd685e49b093efb，CI 42051949505：Linux后端624 passed/383 skipped/9 warnings（35.78秒），前端与NGINX通过。实际zlib1.4/SQLite3.54.0加载、解析/Worker/资源故障、独立OCI重建、SBOM、Trivy扫描及Grype/发布字节绑定均已通过；监控与数据库作业仍在进行，不将其记为完整CI成功。
+
+已下载该轮阶段性SBOM制品13427463401，ZIP SHA256 `b91a356577a67e76928dbe1d9edaf01edde09a770fcaa9f4bb19e2e91f2afe35`与GitHub响应匹配，最新校验器实际核对12 Debian/145 Python及两个固定上游原生组件；SQLite二进制SHA256 `ec04c762bf8260f4bdbff3df0c6adc66db811fd0a42c5a0c97535e80353d2c40`，zlib SHA256 `cbbf4f3216d9346434d4243a0ac1a3202c39eeacd75049448cf2a50057202112`。它不是最终签名制品包，不将旧OCI摘要套用本轮。
+
+最新源码2852e4b32cc2435cf4a40a0831bdee0f9d61ba4c/CI 42052908399已通过后端、前端、NGINX及PG/Redis四作业；PG/Redis232 passed/1显式本地权重deselected/0 skipped（857.01秒）。实际镜像CA信任库加载、独立OCI重建、应用扫描/绑定、Grafana完整扫描/真实查询及Prometheus扫描已通过，Collector完整重建仍在执行。不可把这些阶段性成功当作最后制品作业全绿或已签发证明。原生修复/不适用边界见[SQLite](s2-sqlite-security.md)、[zlib](s2-zlib-security.md)，正式完成仍以[最终账本](s2-final-acceptance.md)和Git交付为准。
+
+## 2026-11-02 最新复核
+
+Python最低3.11、生产3.12；独立3.12.15锁环境592 passed/384 skipped/9 warnings（49.41秒），145已安装包依赖一致，锁导出审计0已知漏洞。原3.10环境保留，不作为新锁支持环境。Collector完整255组件、实际过滤/故障恢复、0 HIGH/CRITICAL及升级后VM新257 Span复验通过。CI 41452849991因新漏洞失败，相关Python修复待新CI验收；OIDC/main提交尚未完成，不宣布S2完成。真实送达与账单继续按用户豁免保留未验证；准确摘要和失败历史见[最终账本](s2-final-acceptance.md)。
+
+## 2026-10-29 当前 S2 验收
+
+本轮目标仅为S2及Git收尾，不等于整体生产上线。权威逐项状态见[最终验收账本](s2-final-acceptance.md)。最新本机普通后端588 passed/384 skipped（31.31秒），S2跨模块真实组件组192 passed/0 skipped（276.39秒）；组间不累加，跳过不计通过。前端40 passed/build/npm audit0。
+
+用户明确跳过真实外部告警送达和供应商账单对账，两项仍标“未验证”，不再等待Gmail凭据或导出。现有管理配置的DeepSeek真实生成已验证，不从环境发现密钥。当前应用OCI独立重建和扫描通过；新库检出的Grafana go-jose高危已在官方固定源码重建中修复，本机完整扫描/六查询/浏览器复验通过。GitHub CI运行40788755603仍在执行，尚无最终OIDC验签或main第二笔完成提交。下文“最新/尚未推送/缺凭据”和旧镜像扫描均属对应日期的历史，不覆盖本段当前边界。
+
+## 2026-10-28 S2 收尾复验
+
+最新增量：显式授权管理界面DeepSeek配置后，真实合成生成成功，input21/output3、requests1；首次探针usage属性调用错误造成取证缺失，不伪造其用量/费用，保留可能计费未知。三通知出站适配器及离线回归13 passed，后端全量 **571 passed / 383 skipped（32.37秒）**。Gmail正式凭据/送达与PG受保护收费链路尚缺；用户已授权推送现有公开仓库，但未据此宣称CI已运行。新增应用模块使最终制品需重新构建，历史r2扫描不覆盖新增源码。
+
+本轮最终普通后端全量 **556 passed / 383 skipped，27.23秒**，Collector/Grafana/供应链/签名专项24 passed，CI最终步骤顺序变动后5 passed；组重叠不累加。Prometheus3.15.1和Collector0.164.0固定镜像补扫0 HIGH/CRITICAL；新版真实六面板查询及Collector故障恢复通过，node2可回退升级后Run `68e8445b-d0af-4927-8a53-31b5f37d9dee`的257 Span全链关联再次通过。CI将最终制品上传放在应用和监控所有门禁之后，但没有远端执行证据。下文552/549均为前批历史计数。
+
+后续修复：Grafana已形成官方13.2.5 distroless-slim＋固定SHA256 Prometheus插件制品，禁用运行时插件自动下载，严格复扫0 HIGH/CRITICAL（含真实可执行backend）；六面板查询/浏览器、401与缺数据灰色NOT HEALTHY通过。manifest `sha256:1b03b2eb88da8ff5c4994742070cfcffd9b7fdde2a6fcd27727d7f88219255d8`，详见 [Grafana验收](s2-grafana-acceptance.md)。新增CI构建/扫描/真实查询门禁及契约回归16 passed；普通后端最新 **552 passed / 383 skipped，27.90秒**，下段549为前批历史值。旧12.3.1合成测试栈已精确移除，保留仓库外历史证据，新修复栈接替；没有删除业务数据。
+
+显式接入隔离 PostgreSQL/Redis/S3/Prometheus/Alertmanager/本地权重目录的 S2 跨模块选定组：**175 passed / 0 skipped，284.91 秒**。报告保存于仓库外 `D:/codex_project/customer_service_vm_lab_20261026/s2-final-integration-20261028.xml`。普通后端全量另为 **549 passed / 383 skipped（29.57 秒）**；固定本地权重计量另项 **1 passed（18.78 秒）**，各组不得相加为一次全量。
+
+应用 r2 0 HIGH/CRITICAL、独立空缓存 OCI 逐 blob 重建一致及测试身份签名/篡改拒绝通过；正式发布身份/远端 CI 不在此证明范围。Grafana 旧12.3.1与本次解析的官方 latest 固定摘要均未过 HIGH/CRITICAL 安全门禁，未部署替换或豁免。后者发现 Go stdlib、x/net 及 Tempo 依赖的 HIGH，不能仅靠升级基础 OS 消除。真实渠道/账单及生产容量仍缺；S2 整体未勾选完成。详细边界见 [S2 清单](s2-completion-checklist.md)及 [Grafana验收](s2-grafana-acceptance.md)。
+
 2026-10-26 S6阶段推进/最终提升内部事务：head仍0037。advance在发布锁内重采样PG窗口、复查冻结计划/版本/审批/质量/索引，只推进一步；最终激活、审批executed、rollout completed及审计同事务。初版5 passed（22.54秒）；加最终期限复查后扩大15 passed（52.39秒），无外部服务426 passed/352 skipped（25.66秒），组重叠不累加。没有自动调度/失败动作或真实控制HTTP入口，合成1秒/1请求及手写费用不作真实质量/费用/负载证明；新镜像、完整恢复、真实业务与双机仍未完成。见[边界及证据](rag-rollout-advance.md)。
 
 2026-10-26 当前head0037：新增owner只读候选观察窗口和数据库阶段时钟，按tenant/rollout/路由version/候选index隔离，NULL费用不忽略、每轮累加所有attempt再取最大值；pending、未知费用、上下文或时间异常均阻止通过。计划/观察单元+真实PG观察/控制/存储39 passed（35.43秒），静态18 passed，本地426 passed/347 skipped（30.41秒），组重叠不累加。observe不接受外传统计、不改流量，阶段推进/最终提升尚未实现；迁移必须先暂停running灰度，旧镜像/完整恢复/生产质量及双机验收仍缺。见[窗口边界](rag-observation.md)。

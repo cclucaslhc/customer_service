@@ -10,6 +10,41 @@ from app.knowledge_retrieval import (KnowledgeIndexChanged, LexicalCandidates, R
                                      RepositoryLexicalRetriever, RepositoryVectorRetriever)
 from app.rag_model_manifest import EMBEDDING_WEIGHT, RERANKER_WEIGHT
 from app.tracing import SafeTracing
+from app.identity import AuthenticationError,AuthorizationError
+from app.local_inference_usage import LocalInferenceAccountingError
+from types import SimpleNamespace
+
+
+@pytest.mark.parametrize('error',[AuthenticationError(),AuthorizationError(),
+    KnowledgeIndexChanged('synthetic'),LocalInferenceAccountingError('synthetic'),
+    sa.exc.OperationalError('synthetic',{},Exception())])
+def test_embedding_authority_and_accounting_errors_are_not_model_degradation(error):
+    profile=dict(model_id=EMBEDDING_WEIGHT.repository,model_revision=EMBEDDING_WEIGHT.revision,
+        weights_sha256=EMBEDDING_WEIGHT.sha256,license_id=EMBEDDING_WEIGHT.license_id,
+        dimension=1024,distance='cosine',normalized=True,max_tokens=1024,
+        lexical_version='test',chunker_version='test',reranker_version=None)
+    def fail(*args,**kwargs): raise error
+    repository=SimpleNamespace(active_vector_profile=lambda:profile)
+    gateway=SimpleNamespace(max_length=1024,encode=fail)
+    retriever=RepositoryVectorRetriever(repository,gateway,lexical_version='test',chunker_version='test')
+    with pytest.raises(type(error)) as caught: retriever.candidates('synthetic',limit=1)
+    assert caught.value is error
+
+
+@pytest.mark.parametrize('error',[AuthenticationError(),AuthorizationError(),
+    KnowledgeIndexChanged('synthetic'),LocalInferenceAccountingError('synthetic')])
+def test_reranker_authority_and_accounting_errors_are_not_silently_ignored(error):
+    class Repository:
+        def setting(self,key): return None
+        def search_candidates(self,terms,limit):
+            return [dict(id=1,content='退货需要订单号。',section='退货',location='第1页',
+                block_type='paragraph',metadata_json={},document_id='synthetic-doc',
+                display_name='Synthetic',score=-.2,score_kind='postgres_ts_rank')],[]
+        def assets(self,document_ids): return []
+    def fail(*args,**kwargs): raise error
+    service=KnowledgeService(repository=Repository(),reranker=SimpleNamespace(score=fail))
+    with pytest.raises(type(error)) as caught: service.search('退货需要什么？')
+    assert caught.value is error
 
 
 def test_repository_lexical_retriever_preserves_ranked_and_character_candidates():

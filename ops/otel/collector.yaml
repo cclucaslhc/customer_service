@@ -1,0 +1,54 @@
+# Same-host Collector: never publish its loopback ports or enable debug export.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+        max_request_body_size: 1048576
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 192
+    spike_limit_mib: 32
+  filter/registered:
+    error_mode: propagate
+    traces:
+      span:
+        - 'not IsMatch(name, "^(http[.]request|worker[.]chat|worker[.]knowledge|agent[.]run|tool[.]execute|rag[.]search|rag[.]embed_query|rag[.]vector|rag[.]fuse|rag[.]rerank|model[.]request|db[.]query|object[.]request)$")'
+      spanevent:
+        - 'true'
+  transform/privacy:
+    error_mode: propagate
+    trace_statements:
+      - context: resource
+        statements:
+          - 'keep_keys(attributes, ["service.name"])'
+          - 'set(attributes["service.name"], "customer-service")'
+      - context: span
+        statements:
+          - 'keep_keys(attributes, ["request_id", "run_id", "job_id", "http.request.method", "http.route", "http.response.status_code", "outcome", "stream", "attempt_id", "tool.name", "rag.stage", "model.provider", "model.stream", "object.operation"])'
+          - 'set(status.message, "")'
+  batch:
+    timeout: 1s
+    send_batch_size: 128
+    send_batch_max_size: 256
+exporters:
+  file/private:
+    path: /var/lib/customer-service-otel/traces.json
+    rotation:
+      max_megabytes: 20
+      max_days: 7
+      max_backups: 3
+extensions:
+  health_check:
+    endpoint: 127.0.0.1:13133
+service:
+  extensions: [health_check]
+  telemetry:
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/registered, transform/privacy, batch]
+      exporters: [file/private]

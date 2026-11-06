@@ -1,6 +1,18 @@
 # S2–S6当前交付边界
 
-更新：2026-10-27。这是当前摘要，历史批次与逐项证据保留在[验收记录](production-verification.md)，不以某组测试数代替阶段完成。目标仍为自管Linux双实例＋反向代理，默认DeepSeek、单Agent及独立ModelGateway。
+2026-11-05最新：S2六项技术验收已通过，验收分支CI 42052908399五作业全绿，正式OIDC验签/实际制品绑定与错误主线身份拒绝均已核验。两项用户豁免仍未验证；main发布须独立核对其CI/签名。整体生产上线、S3–S7不据此完成。当前逐项结论和精确证据见[最终账本](s2-final-acceptance.md)；下文是历史状态。
+
+2026-11-05当前：仅推进S2。前一CI已通过新zlib1.4/SQLite3.54.0实际库加载、文档/Worker、独立OCI重建、扫描与绑定；下载并核验真实SBOM为12 Debian/145 Python/2上游组件。最新CA配置候选仍在CI，不能将前轮结果拼成最终全绿；监控门禁、OIDC及main交付仍待完成。两项用户豁免继续标未验证，所有历史批次以[最终账本](s2-final-acceptance.md)为准。
+
+2026-11-02最新：独立Python3.12.15全量592 passed/384 skipped，支持最低3.11，锁审计0已知漏洞；Collector完整255组件/扫描及VM新257 Span复验已通过。新依赖安全修复尚待新CI、OIDC和main收尾，S2仍未完成。真实送达/账单均按用户明确决定未验证。下文是历史批次，详见[最新账本](s2-final-acceptance.md)。
+
+2026-10-29当前验收口径：真实外部告警送达和真实账单对账已由用户明确豁免，不再作为本轮待提供资源；仍保留“未验证”，不是通过。最新S2集成192 passed/0 skipped、应用OCI重建/扫描通过；GitHub真实CI已推进到独立OCI构建器修复，尚未最终全绿或main收尾提交。以下历史“未提供渠道/账单”不覆盖该决定，权威状态见[最终验收账本](s2-final-acceptance.md)。
+
+更新：2026-10-28。当前用户目标已收窄为 S2 收尾并提交，不再扩展 S3–S6；下文其他阶段保留为已有状态。历史批次与逐项证据保留在[验收记录](production-verification.md)，不以某组测试数代替阶段完成。架构仍为自管Linux双实例＋反向代理，默认DeepSeek、单Agent及独立ModelGateway。
+
+本轮最新收尾：后端588 passed/384 skipped（31.31秒）；真实认证接收/取消保护、应用OCI独立重建及扫描、Alertmanager安全重建与Linux认证触发/恢复均已有证据。新库发现的Grafana高危已通过源码重建修复，本机完整扫描及六查询通过；新轮CI 40788755603运行中。三通知接口保留；外部送达和供应商账单按用户要求跳过，仍未验证。现有DeepSeek真实生成与用量已验证，不冒充VM/PG域中的真实受保护调用。GitHub OIDC证明已接线，实际签发/验证和main提交仍待完成。下段556为历史值，当前状态以[最终验收账本](s2-final-acceptance.md)为准。
+
+S2 最新：跨模块真实隔离集成 **175 passed / 0 skipped（284.91 秒）**；普通后端全量 **556 passed / 383 skipped（27.23 秒）**，固定本地权重计量另项通过。新增Grafana、journald权限/脱敏、Collector与API→Worker关联、本地推理计量/告警、应用r2重建/扫描/测试身份签名。Grafana固定插件制品、Prometheus3.15.1、Collector0.164.0均0 HIGH/CRITICAL；查询/浏览器/Collector故障恢复通过，node2已可回退升级并复验257 Span链路。正式值班渠道、供应商账单、正式发布身份及远端 CI 未验收；不宣布整个 S2 完成。逐项见 [S2 收尾清单](s2-completion-checklist.md)。
 
 最新运行增量：两VM已部署真实API/HTTPS及合成ChatWorker，跨guest Cookie/CSRF、入队/SSE/重放、API1停止时API2继续服务及API1恢复通过。Worker SIGKILL、运行中跨节点取消、主动断开未完成 SSE 并从另一节点续传也已有实测。私有 TLS LB 已验证固定入口的 GET 被动摘除与备节点完整对话。详见[运行验收](two-node-runtime-acceptance.md)。PG与LB仍单点、Redis尚未接入本批策略，不能勾选S3。
 

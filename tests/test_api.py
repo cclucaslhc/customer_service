@@ -635,7 +635,7 @@ def test_import_document_from_local_path(tmp_path) -> None:
     with TestClient(app) as client:
         location = client.get("/api/admin/knowledge/location")
         assert location.status_code == 200
-        assert location.json()["path"].endswith("data\\knowledge")
+        assert Path(location.json()["path"]).parts[-2:]==('data','knowledge')
 
         response = client.post(
             "/api/admin/knowledge/import",

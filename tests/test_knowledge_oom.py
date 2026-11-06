@@ -38,10 +38,17 @@ def test_real_worker_fault_retains_capacity_and_requires_confirmed_release(queue
     data = b'Synthetic queued input survives a Worker cgroup OOM.'
     job = jobs.create_upload('synthetic.txt',data)
     owned=[]
+    # A native Linux bind mount keeps host UID ownership (unlike Desktop's
+    # Windows sharing). Use the unprivileged fixture UID, not root or chmod777.
+    # Image default UID65532 is independently checked by the artifact gate.
+    user_options=[]
+    if os.name=='posix':
+        assert os.geteuid()!=0,'Use an unprivileged host fixture identity'
+        user_options=['--user',f'{os.geteuid()}:{os.getegid()}']
     def peer(arguments,*,kill_at_marker=False):
         name = 'cs-oom-worker-'+uuid.uuid4().hex
         fixture = Path(__file__).resolve().parent/'fixtures'
-        command('create','--pull=never','--name',name,'--network','container:'+pg,'--read-only',
+        command('create','--pull=never','--name',name,'--network','container:'+pg,'--read-only',*user_options,
             '--memory=768m','--memory-swap=768m','--pids-limit=64','--cpus=1',
             '--cap-drop=ALL','--security-opt=no-new-privileges','--tmpfs=/tmp:rw,size=64m',
             '--mount',f'type=bind,source={tmp_path.resolve()},target=/scratch',

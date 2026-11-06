@@ -189,6 +189,8 @@ S1 当前增量：加密 pg_dump 与业务/文件 manifest、同一 exported sna
 
 ## S2：日志、指标、费用与部署制品
 
+2026-11-05技术验收：以下六项在[最终账本](s2-final-acceptance.md)明确范围内已验。单轮CI 42052908399五作业全绿，真实OIDC及实际字节绑定通过；真实通知送达和账单由用户明确豁免，仍未验证。main交付必须单独验证其自身CI/证明；不因此勾选其他阶段或批准生产上线。下文日期段保留为历史。
+
 2026-10-21 Linux 镜像复验：本机构建发现并修复 slim 镜像缺少 OpenCV 运行库，非 root、只读、无网络启动已通过；固定 Trivy 扫描仍报 81 条无列出修复版本的高危/严重项。保留 CI 失败门槛，不静默忽略；需正式漏洞处置/风险批准或更新基础制品后复扫，S2 制品项不勾选。
 
 2026-10-21 CI 集成修复：隔离 PostgreSQL 已换成固定 digest 的 PG16/pgvector 镜像；零跳过作业明确区分不需要本地 GPU 权重的集成组与离线真实模型专项。本机同等 PG/Redis 组 86 通过、零跳过，托管 CI 仍待运行；不据此勾选可重建制品或完整 S2。
@@ -235,12 +237,12 @@ catalog/receipt增量：独立store加密检查点与固定版本引导/认证�
 
 2026-10-13 S2 日志增量：可选有界 JSON 出口、固定字段/字节上限、私有丢弃/失败/队列指标及 promtool 验证的日志告警规则已接通，默认关闭。正式 API 装配、受控 writer、留存/角色、生产采集/接收人送达仍未完成，不能勾选日志或完整 S2；见[观测规范](observability.md)。
 
-- [ ] 结构化日志字段、脱敏、保留期与访问角色。
-- [ ] OTel HTTP/Agent/model/tool/RAG/database spans；贯通 request_id、run_id、attempt_id。
-- [ ] Prometheus 指标低基数标签、Grafana 仪表盘、Alertmanager 路由与演练。
-- [ ] 每次模型尝试、Embedding、Rerank 用量入账；版本化价格、未知值和账单对账。
-- [ ] 日/租户/Run 预算软告警与硬限额，原子预留防止并发越额。
-- [ ] 锁定依赖、不可变镜像、非 root、漏洞扫描；可重建 CI 制品。
+- [x] 结构化日志字段、脱敏、保留期与访问角色（配置/隔离机制实测，不冒称生产容量或逐条TTL）。
+- [x] OTel HTTP/Agent/model/tool/RAG/database spans；贯通 request_id、run_id、attempt_id。
+- [x] Prometheus 指标低基数标签、Grafana 仪表盘、Alertmanager 路由与演练（真实外部送达按用户决定未验证）。
+- [x] 每次模型尝试、Embedding、Rerank 用量入账；版本化价格与未知值（真实账单按用户决定未验证，合成合同不当供应商账单）。
+- [x] 日/租户/Run 预算软告警与硬限额，原子预留防止并发越额。
+- [x] 锁定依赖、不可变镜像、非 root、漏洞扫描；可重建 CI 制品及真实OIDC验签/绑定（主线发布仍须核对自己的证明）。
 
 ## S3：多实例与 Redis
 

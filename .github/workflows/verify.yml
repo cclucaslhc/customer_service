@@ -76,7 +76,9 @@ jobs:
           test -x /usr/lib/postgresql/16/bin/pg_restore
           test -x /usr/lib/postgresql/16/bin/psql
       - name: Start disposable loopback PostgreSQL and Redis
-        run: docker compose -f compose.integration.yml up -d --wait
+        # This job selects PG/Redis tests only. Do not pull unrelated S3 services
+        # or claim this job proves object-store integration.
+        run: docker compose -f compose.integration.yml up -d --wait postgres redis
       - name: Run real integration tests with no skips
         env:
           TEST_POSTGRES_URL: postgresql+psycopg://integration:local-integration-only@127.0.0.1:55432/postgres
@@ -89,6 +91,7 @@ jobs:
             tests/test_tracing_pg.py tests/test_redis_admission.py tests/test_rag_release_audit.py \
             tests/test_maintenance.py tests/test_rag_release_storage.py tests/test_rag_release_service.py tests/test_rag_rollout_storage.py tests/test_rag_rollout_service.py tests/test_rag_route_projection.py tests/test_run_rag_route.py tests/test_rag_routed_retrieval.py tests/test_rag_rollout_window_pg.py tests/test_rag_rollout_advance.py tests/test_rag_rollout_health.py \
             tests/test_rag_reversion.py tests/test_rag_backup_restore.py tests/test_model_usage.py tests/test_model_budget.py tests/test_model_cost.py \
+            tests/test_local_inference_usage.py tests/test_local_inference_metrics.py \
             --junitxml="$RUNNER_TEMP/postgres-redis-integration.xml"
           .venv/bin/python -c 'import xml.etree.ElementTree as ET, os; root=ET.parse(os.environ["RUNNER_TEMP"]+"/postgres-redis-integration.xml").getroot(); assert sum(int(node.get("skipped", "0")) for node in root.iter("testsuite")) == 0, "Integration tests skipped"'
       - name: Stop only this job's disposable services
@@ -120,18 +123,26 @@ jobs:
 
   linux-image:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build locked, non-root Linux image
         run: docker build --pull --platform linux/amd64 --tag customer-service:verify .
       - name: Check artifact identity and offline startup
         run: |
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            customer-service:verify python scripts/sqlite_runtime.py probe
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            customer-service:verify python scripts/zlib_runtime.py probe
           test "$(docker image inspect customer-service:verify --format '{{.Config.User}}')" = '65532:65532'
           test "$(docker image inspect customer-service:verify --format '{{json .Config.Entrypoint}}')" = 'null'
           docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
             --entrypoint /opt/customer-service/.venv/bin/python customer-service:verify \
-            -c 'import os; from pathlib import Path; import app.main, app.chat_worker, app.knowledge_worker; assert os.getuid() == 65532 and Path("frontend/dist/index.html").is_file()'
+            -c 'import os, ssl; from pathlib import Path; import app.main, app.chat_worker, app.knowledge_worker; assert os.getuid() == 65532 and Path("frontend/dist/index.html").is_file(); assert os.environ["SSL_CERT_FILE"] == "/etc/ssl/certs/ca-certificates.crt"; assert ssl.create_default_context().get_ca_certs(), "Runtime trust store is empty"'
           docker image inspect customer-service:verify --format 'image_id={{.Id}}'
       - name: Verify parser sandbox and document formats in the actual image
         run: |
@@ -198,10 +209,15 @@ jobs:
           .venv/bin/python -c 'import xml.etree.ElementTree as ET, os; root=ET.parse(os.environ["RUNNER_TEMP"]+"/worker-oom.xml").getroot(); assert sum(int(node.get("skipped", "0")) for node in root.iter("testsuite")) == 0, "OOM integration test skipped"'
       - name: Build and verify byte-reproducible OCI image
         run: |
-          docker buildx build --pull --platform linux/amd64 --provenance=false \
+          trap 'docker buildx rm cs-oci-ci cs-oci-rebuild-ci' EXIT
+          docker buildx create --name cs-oci-ci --driver docker-container \
+            --driver-opt image=moby/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea --bootstrap
+          docker buildx create --name cs-oci-rebuild-ci --driver docker-container \
+            --driver-opt image=moby/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea --bootstrap
+          docker buildx build --builder cs-oci-ci --pull --platform linux/amd64 --provenance=false \
             --build-arg SOURCE_DATE_EPOCH=0 \
             --output "type=oci,dest=$RUNNER_TEMP/customer-service-image.oci.tar,rewrite-timestamp=true" .
-          docker buildx build --pull --no-cache --platform linux/amd64 --provenance=false \
+          docker buildx build --builder cs-oci-rebuild-ci --pull --no-cache --platform linux/amd64 --provenance=false \
             --build-arg SOURCE_DATE_EPOCH=0 \
             --output "type=oci,dest=$RUNNER_TEMP/customer-service-rebuild.oci.tar,rewrite-timestamp=true" .
           python3 scripts/verify_image_rebuild.py \
@@ -211,12 +227,19 @@ jobs:
           tar -xf "$RUNNER_TEMP/customer-service-image.oci.tar" -C "$RUNNER_TEMP/customer-service-oci"
       - name: Generate CycloneDX SBOM
         run: |
-          docker run --rm -v "$RUNNER_TEMP:/scan" \
+          docker run --rm --user "$(id -u):$(id -g)" --env TRIVY_CACHE_DIR=/tmp/trivy-cache -v "$RUNNER_TEMP:/scan" \
             docker.io/aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e \
             image --input /scan/customer-service-oci --format cyclonedx \
             --output /scan/customer-service-sbom.cdx.json --timeout 10m
       - name: Verify SBOM package inventories
-        run: python3 scripts/verify_sbom.py "$RUNNER_TEMP/customer-service-sbom.cdx.json"
+        run: |
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            customer-service:verify python -c 'from pathlib import Path; print(Path("/usr/share/customer-service/native/sqlite3.cdx.json").read_text())' > "$RUNNER_TEMP/sqlite3.cdx.json"
+          python3 scripts/sqlite_runtime.py enrich "$RUNNER_TEMP/customer-service-sbom.cdx.json" "$RUNNER_TEMP/sqlite3.cdx.json"
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            customer-service:verify python -c 'from pathlib import Path; print(Path("/usr/share/customer-service/native/zlib.cdx.json").read_text())' > "$RUNNER_TEMP/zlib.cdx.json"
+          python3 scripts/zlib_runtime.py enrich "$RUNNER_TEMP/customer-service-sbom.cdx.json" "$RUNNER_TEMP/zlib.cdx.json"
+          python3 scripts/verify_sbom.py "$RUNNER_TEMP/customer-service-sbom.cdx.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: customer-service-sbom
@@ -224,7 +247,111 @@ jobs:
           if-no-files-found: error
       - name: Scan OS and application packages
         run: |
-          docker run --rm -v "$RUNNER_TEMP:/scan" \
+          trap 'python3 ops/release/scan_summary.py "$RUNNER_TEMP/customer-service-vulnerabilities.json"' EXIT
+          docker run --rm --user "$(id -u):$(id -g)" --env TRIVY_CACHE_DIR=/tmp/trivy-cache -v "$RUNNER_TEMP:/scan" \
             docker.io/aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e \
             image --input /scan/customer-service-oci --scanners vuln \
-            --severity HIGH,CRITICAL --exit-code 1 --timeout 10m
+            --severity HIGH,CRITICAL --exit-code 1 --format json \
+            --output /scan/customer-service-vulnerabilities.json --timeout 10m
+      - name: Bind OCI, SBOM and passing scan into release evidence
+        run: |
+          # Trivy covers Debian/Python; Grype additionally matches upstream native
+          # CPEs. Do not drop SQLite from inventory or ignore the Debian finding.
+          curl --fail --location --retry 3 https://github.com/anchore/grype/releases/download/v0.121.0/grype_0.121.0_linux_amd64.tar.gz -o "$RUNNER_TEMP/grype.tar.gz"
+          echo "64e07133d3486115de647a66581461dccf5c732748a0a3119077395565f15519  $RUNNER_TEMP/grype.tar.gz" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/grype-bin"
+          tar -xzf "$RUNNER_TEMP/grype.tar.gz" -C "$RUNNER_TEMP/grype-bin" grype
+          python3 scripts/sqlite_runtime.py scanner-control "$RUNNER_TEMP/sqlite-vulnerable-control.cdx.json"
+          if "$RUNNER_TEMP/grype-bin/grype" "sbom:$RUNNER_TEMP/sqlite-vulnerable-control.cdx.json" --fail-on high -o json > "$RUNNER_TEMP/sqlite-vulnerable-control.json"; then
+            echo 'Native scanner missed deliberately vulnerable SQLite'; exit 1
+          fi
+          python3 scripts/sqlite_runtime.py check-scanner-control "$RUNNER_TEMP/sqlite-vulnerable-control.json"
+          "$RUNNER_TEMP/grype-bin/grype" "sbom:$RUNNER_TEMP/customer-service-sbom.cdx.json" --vex "$GITHUB_WORKSPACE/ops/release/sqlite-library.openvex.json" --fail-on high -o json > "$RUNNER_TEMP/customer-service-native-vulnerabilities.json"
+          python3 scripts/sqlite_runtime.py bind-scan "$RUNNER_TEMP/customer-service-vulnerabilities.json" "$RUNNER_TEMP/customer-service-native-vulnerabilities.json" "$RUNNER_TEMP/customer-service-sbom.cdx.json"
+          .venv/bin/python ops/release/evidence.py create \
+            --signature-policy github-oidc-slsa-v1 \
+            --oci "$RUNNER_TEMP/customer-service-image.oci.tar" \
+            --sbom "$RUNNER_TEMP/customer-service-sbom.cdx.json" \
+            --scan "$RUNNER_TEMP/customer-service-vulnerabilities.json" \
+            --manifest "$RUNNER_TEMP/customer-service-release.json"
+          .venv/bin/python -m pytest -q tests/test_release_evidence.py
+      - name: Build monitoring image with immutable Prometheus plugin
+        run: |
+          docker build --platform linux/amd64 --provenance=false \
+            -f ops/grafana/Dockerfile -t customer-service-grafana:verify .
+          docker save --output "$RUNNER_TEMP/grafana-image.tar" customer-service-grafana:verify
+      - name: Scan complete monitoring image before live queries
+        run: |
+          trap 'python3 ops/release/scan_summary.py "$RUNNER_TEMP/grafana-vulnerabilities.json"' EXIT
+          docker run --rm -v "$RUNNER_TEMP:/scan" \
+            docker.io/aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e \
+            image --input /scan/grafana-image.tar --scanners vuln \
+            --severity HIGH,CRITICAL --exit-code 1 --format json \
+            --output /scan/grafana-vulnerabilities.json --timeout 10m
+      - name: Verify real private metrics and all Grafana queries
+        run: |
+          .venv/bin/python scripts/verify_grafana.py \
+            --app-image customer-service:verify --grafana-image customer-service-grafana:verify
+      - name: Scan pinned Prometheus image
+        run: |
+          trap 'python3 ops/release/scan_summary.py "$RUNNER_TEMP/prometheus-vulnerabilities.json"' EXIT
+          docker run --rm -v "$RUNNER_TEMP:/scan" \
+            docker.io/aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e \
+            image --image-src remote --scanners vuln --severity HIGH,CRITICAL \
+            --exit-code 1 --format json --output /scan/prometheus-vulnerabilities.json \
+            --timeout 10m prom/prometheus@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2
+      - name: Build and scan security-rebuilt Collector
+        run: |
+          docker build --platform linux/amd64 --provenance=false \
+            --build-arg 'GO_MODULE_PROXY=https://proxy.golang.org|https://goproxy.cn|direct' \
+            -f ops/otel/Dockerfile -t customer-service-collector:verify .
+          docker save --output "$RUNNER_TEMP/collector-image.tar" customer-service-collector:verify
+          trap 'python3 ops/release/scan_summary.py "$RUNNER_TEMP/collector-vulnerabilities.json"' EXIT
+          docker run --rm -v "$RUNNER_TEMP:/scan" \
+            docker.io/aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e \
+            image --input /scan/collector-image.tar --scanners vuln --severity HIGH,CRITICAL \
+            --exit-code 1 --format json --output /scan/collector-vulnerabilities.json --timeout 10m
+      - name: Verify real Collector privacy and outage recovery
+        run: .venv/bin/python scripts/verify_collector.py --app-image customer-service:verify --collector-image customer-service-collector:verify
+      - name: Build and scan security-rebuilt Alertmanager
+        run: |
+          docker build --platform linux/amd64 --provenance=false \
+            -f ops/alertmanager/Dockerfile -t customer-service-alertmanager:verify .
+          docker save --output "$RUNNER_TEMP/alertmanager-image.tar" customer-service-alertmanager:verify
+          docker run --rm -v "$RUNNER_TEMP:/scan" \
+            docker.io/aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e \
+            image --input /scan/alertmanager-image.tar --scanners vuln --severity HIGH,CRITICAL \
+            --exit-code 1 --format json --output /scan/alertmanager-vulnerabilities.json --timeout 10m
+      - name: Verify real authenticated Alertmanager receiver without external email
+        run: |
+          docker create --name cs-alertmanager-binary-ci \
+            customer-service-alertmanager:verify
+          docker cp cs-alertmanager-binary-ci:/bin/alertmanager "$RUNNER_TEMP/alertmanager"
+          docker rm cs-alertmanager-binary-ci
+          chmod 755 "$RUNNER_TEMP/alertmanager"
+          TEST_ALERTMANAGER_PATH="$RUNNER_TEMP/alertmanager" \
+            .venv/bin/python -m pytest -q -rs tests/test_alert_receiver_integration.py \
+            --junitxml="$RUNNER_TEMP/private-alert-receiver.xml"
+          .venv/bin/python -c 'import xml.etree.ElementTree as ET, os; root=ET.parse(os.environ["RUNNER_TEMP"]+"/private-alert-receiver.xml").getroot(); assert sum(int(node.get("skipped", "0")) for node in root.iter("testsuite")) == 0, "Private receiver test skipped"'
+      # No production signing key is inferred or generated. The release owner
+      # can still sign offline. Push CI uses a short-lived GitHub OIDC identity;
+      # consumers must check this repository/workflow/source ref, not just a signature.
+      - name: Attest bound release evidence using GitHub OIDC
+        id: release_attestation
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: ${{ runner.temp }}/customer-service-release.json
+      # Upload only after application AND monitoring gates, never if: always().
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: customer-service-verified-oci-${{ github.sha }}
+          compression-level: 0
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/customer-service-image.oci.tar
+            ${{ runner.temp }}/customer-service-sbom.cdx.json
+            ${{ runner.temp }}/customer-service-vulnerabilities.json
+            ${{ runner.temp }}/customer-service-release.json
+            ${{ steps.release_attestation.outputs.bundle-path }}
+          if-no-files-found: error

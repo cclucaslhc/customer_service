@@ -49,7 +49,7 @@ def _wait_for(deliveries, status, processes):
     pytest.fail(f'Alertmanager did not deliver {status} notification')
 
 
-@pytest.mark.parametrize('scenario',('http_log','model_circuit'))
+@pytest.mark.parametrize('scenario',('http_log','model_circuit','local_inference'))
 def test_real_alertmanager_delivers_firing_and_resolved(tmp_path,scenario):
     binaries = [os.environ.get('TEST_PROMETHEUS_PATH'), os.environ.get('TEST_ALERTMANAGER_PATH')]
     if not all(binaries):
@@ -61,17 +61,18 @@ def test_real_alertmanager_delivers_firing_and_resolved(tmp_path,scenario):
     assert len({metrics_port, prometheus_port, alertmanager_port}) == 3
     deliveries = []
     alive = threading.Event()
-    alert_name = ('CustomerServiceHttpLogPipelineUnavailable' if scenario == 'http_log'
-                  else 'CustomerServiceModelCircuitProbeStuck')
+    alert_name = {'http_log':'CustomerServiceHttpLogPipelineUnavailable',
+        'model_circuit':'CustomerServiceModelCircuitProbeStuck',
+        'local_inference':'CustomerServiceLocalInferenceUnresolved'}[scenario]
 
     class SyntheticEndpoint(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path != '/metrics':
                 self.send_error(404)
                 return
-            payload = (f'customer_service_http_log_export_worker_alive {int(alive.is_set())}\n'
-                       if scenario == 'http_log' else
-                       f'customer_service_model_circuit_states{{state="half_open"}} {int(not alive.is_set())}\n').encode()
+            payload = {'http_log':f'customer_service_http_log_export_worker_alive {int(alive.is_set())}\n',
+                'model_circuit':f'customer_service_model_circuit_states{{state="half_open"}} {int(not alive.is_set())}\n',
+                'local_inference':f'customer_service_local_inference_stale_unresolved{{purpose="embedding_document"}} {int(not alive.is_set())}\n'}[scenario].encode()
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain; version=0.0.4')
             self.send_header('Content-Length', str(len(payload)))
@@ -98,11 +99,12 @@ def test_real_alertmanager_delivers_firing_and_resolved(tmp_path,scenario):
     thread = threading.Thread(target=receiver.serve_forever, daemon=True)
     thread.start()
     root = Path(__file__).resolve().parents[1]
-    rule_path = ('http-log-alerts.yml' if scenario == 'http_log' else 'model-circuit-alerts.yml')
+    rule_path = {'http_log':'http-log-alerts.yml','model_circuit':'model-circuit-alerts.yml',
+        'local_inference':'local-inference-alerts.yml'}[scenario]
     rules = yaml.safe_load((root / 'ops/prometheus' / rule_path).read_text(encoding='utf-8'))
     rule = next(item for group in rules['groups'] for item in group['rules']
                 if item.get('alert') == alert_name)
-    assert rule['for'] == ('2m' if scenario == 'http_log' else '5m')
+    assert rule['for'] == ('5m' if scenario == 'model_circuit' else '2m')
     rule['for'] = '0s'
     (tmp_path / 'rules.yml').write_text(yaml.safe_dump(rules), encoding='utf-8')
     (tmp_path / 'prometheus.yml').write_text(yaml.safe_dump({

@@ -22,8 +22,10 @@ from app.knowledge_terms import STOPWORDS, expand_query
 from app.knowledge_retrieval import (KnowledgeIndexChanged, RagConfigurationError, RagModelUnavailable,
                                      RepositoryLexicalRetriever, RepositoryVectorRetriever)
 from app.rag_fusion import RankedCandidate, reciprocal_rank_fusion
-from app.rag_model_manifest import RERANKER_WEIGHT
+from app.rag_model_manifest import EMBEDDING_WEIGHT, RERANKER_WEIGHT
 from app.tracing import operation_scope
+from app.identity import AuthenticationError,AuthorizationError
+from app.local_inference_usage import LocalInferenceAccountingError
 from app.settings import ALLOWED_EXTENSIONS, KNOWLEDGE_ASSET_DIR, KNOWLEDGE_DIR, LEGACY_UPLOAD_DIR, MAX_UPLOAD_BYTES, ROOT, SECRETS_DIR
 
 
@@ -122,6 +124,13 @@ class KnowledgeService:
         self.lexical_retriever = lexical_retriever or RepositoryLexicalRetriever(self.repository)
         if vector_retriever is not None and embedding_gateway is not None:
             raise ValueError('Select one vector retrieval source')
+        if isinstance(self.repository,KnowledgeRepository) and self.repository.engine.dialect.name=='postgresql':
+            from app.rag_local import LocalEmbeddingGateway,LocalReranker
+            from app.local_inference_usage import AuditInferenceMeter
+            if isinstance(embedding_gateway,LocalEmbeddingGateway):
+                embedding_gateway=embedding_gateway.with_meter(AuditInferenceMeter.for_knowledge(self.repository,EMBEDDING_WEIGHT))
+            if isinstance(reranker,LocalReranker):
+                reranker=reranker.with_meter(AuditInferenceMeter.for_knowledge(self.repository,RERANKER_WEIGHT))
         self.vector_retriever = vector_retriever or (RepositoryVectorRetriever(self.repository, embedding_gateway,
             lexical_version=TOKENIZER_VERSION, chunker_version=CHUNKER_VERSION,
             reranker_version=RERANKER_WEIGHT.revision if reranker is not None else None)
@@ -563,6 +572,13 @@ class KnowledgeService:
         clone.repository=self.repository.with_route(route)
         clone.vector_retriever=copy(self.vector_retriever)
         clone.vector_retriever.repository=clone.repository
+        from app.rag_local import LocalEmbeddingGateway,LocalReranker
+        from app.local_inference_usage import AuditInferenceMeter
+        gateway=clone.vector_retriever.embedding_gateway
+        if isinstance(gateway,LocalEmbeddingGateway):
+            clone.vector_retriever.embedding_gateway=gateway.with_meter(AuditInferenceMeter.for_knowledge(clone.repository,EMBEDDING_WEIGHT))
+        if isinstance(clone.reranker,LocalReranker):
+            clone.reranker=clone.reranker.with_meter(AuditInferenceMeter.for_knowledge(clone.repository,RERANKER_WEIGHT))
         if isinstance(self.lexical_retriever,RepositoryLexicalRetriever):
             clone.lexical_retriever=RepositoryLexicalRetriever(clone.repository)
         return clone
@@ -666,6 +682,8 @@ class KnowledgeService:
                     item['ranking']['reranker_score'] = round(score, 4)
                     item['relevance'] = round(item['relevance'] + score, 4)
                 ranked.sort(key=lambda item: (-item['relevance'], item['score']))
+            except (AuthenticationError,AuthorizationError,KnowledgeIndexChanged,SQLAlchemyError,LocalInferenceAccountingError):
+                raise
             except (RuntimeError, ValueError) as exc:
                 self.last_degraded_reason = type(exc).__name__
                 logger.warning('RAG reranker degraded reason=%s', self.last_degraded_reason)
